@@ -7,9 +7,8 @@ use crate::detector::{Detector, Micros, Rule, Thresholds};
 use crate::history::{History, Incident};
 use crate::layout::KeyCode;
 
-/// Typed into the void while locked. Compared against virtual-key codes,
-/// which for letters equal the upper-case ASCII letter on every layout.
-pub const UNLOCK_WORD: &[u8] = b"HUMAN";
+/// The default unlock word. See [`Guard::set_unlock_word`].
+pub const UNLOCK_WORD: &str = "human";
 
 /// Minimum pause between two deterrent sounds.
 const DETER_GAP: Micros = 1_500_000;
@@ -42,6 +41,9 @@ pub struct Guard {
     /// Keys whose key-down was swallowed and that are still down. They stay
     /// swallowed after an unlock, until the cat lets go.
     swallowed: Vec<KeyCode>,
+    /// Upper-case ASCII, which is what virtual-key codes are for letters on
+    /// every layout.
+    word: Vec<u8>,
     typed: Vec<u8>,
     last_sound: Micros,
     history: History,
@@ -54,10 +56,22 @@ impl Guard {
             locked: false,
             passed: Vec::with_capacity(16),
             swallowed: Vec::with_capacity(16),
-            typed: Vec::with_capacity(UNLOCK_WORD.len()),
+            word: UNLOCK_WORD.to_ascii_uppercase().into_bytes(),
+            typed: Vec::new(),
             last_sound: 0,
             history: History::default(),
         }
+    }
+
+    pub fn set_thresholds(&mut self, thresholds: Thresholds) {
+        self.detector.set_thresholds(thresholds);
+    }
+
+    /// The word that unlocks, typed blind. Expects ASCII letters; see
+    /// `Settings::sanitized`.
+    pub fn set_unlock_word(&mut self, word: &str) {
+        self.word = word.to_ascii_uppercase().into_bytes();
+        self.typed.clear();
     }
 
     pub fn is_locked(&self) -> bool {
@@ -124,16 +138,16 @@ impl Guard {
         }
 
         self.swallowed.push(key);
-        if self.typed.len() == UNLOCK_WORD.len() {
+        if self.typed.len() == self.word.len() {
             self.typed.remove(0);
         }
         self.typed.push(vk);
         let progress = (1..=self.typed.len())
             .rev()
-            .find(|&n| self.typed.ends_with(&UNLOCK_WORD[..n]))
+            .find(|&n| self.typed.ends_with(&self.word[..n]))
             .unwrap_or(0);
 
-        let action = if progress == UNLOCK_WORD.len() {
+        let action = if progress == self.word.len() {
             self.unlock();
             Action::Unlock
         } else if fired.is_some() && now - self.last_sound >= DETER_GAP {
@@ -345,6 +359,20 @@ mod tests {
         assert_eq!(g.poll(330 * MS), None);
         assert_eq!(down(&mut g, 's', 340), SWALLOW);
         assert_eq!(up(&mut g, 's'), PASS);
+    }
+
+    #[test]
+    fn the_unlock_word_can_be_changed() {
+        let mut g = guard();
+        g.set_unlock_word("mensch");
+        slam(&mut g, 0);
+        for c in ['w', 'e', 'd'] {
+            up(&mut g, c);
+        }
+        type_word(&mut g, "human", 1_000);
+        assert!(g.is_locked());
+        type_word(&mut g, "mensch", 3_000);
+        assert!(!g.is_locked());
     }
 
     #[test]

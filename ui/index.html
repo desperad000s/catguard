@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>catguard</title>
+<style>
+@font-face { font-family: "Barlow Condensed"; font-weight: 600; src: url("fonts/barlow-condensed-600.woff2") format("woff2"); }
+@font-face { font-family: "Barlow Condensed"; font-weight: 700; src: url("fonts/barlow-condensed-700.woff2") format("woff2"); }
+
+/* The logo's three colours carry the whole app: plate black, white, lime. */
+:root {
+  --lime: #c8f03c;
+  --on-lime: #0a0e11;
+  --display: "Barlow Condensed", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+  --body: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --gap: clamp(1rem, 2vw, 2rem);
+}
+:root[data-theme="dark"] {
+  --bg: #05070a; --panel: #0e1317; --raised: #161d22; --line: #232d34;
+  --ink: #f2f5f3; --muted: #93a0a7; --accent: #c8f03c;
+  --key: #11171c; --key-edge: #2a353d; --key-ink: #7f8c94;
+}
+:root[data-theme="light"] {
+  --bg: #eef1ea; --panel: #ffffff; --raised: #f6f8f3; --line: #d5dbd0;
+  --ink: #0a0e11; --muted: #56616a; --accent: #4a6600;
+  --key: #ffffff; --key-edge: #c9d0c4; --key-ink: #6b767d;
+}
+
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--bg); color: var(--ink);
+  font: 400 clamp(1rem, 0.35vw + 0.92rem, 1.2rem)/1.5 var(--body);
+  display: grid; grid-template-columns: auto 1fr; overflow: hidden;
+  user-select: none; cursor: default;
+}
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+
+/* ---- rail */
+nav {
+  display: flex; flex-direction: column; gap: .35rem;
+  padding: var(--gap) clamp(.6rem, 1vw, 1rem); border-right: 1px solid var(--line);
+  width: clamp(12rem, 17vw, 17rem);
+}
+.brand { font: 700 clamp(1.6rem, 1.4vw + 1rem, 2.2rem)/1 var(--display); letter-spacing: .08em; padding: .2rem .8rem 1.6rem; }
+.brand b { color: var(--accent); font-weight: 700; }
+nav button {
+  display: flex; align-items: center; gap: .8rem; text-align: left;
+  background: none; border: 0; border-radius: .7rem; padding: .7rem .8rem; color: var(--muted);
+}
+nav button:hover { color: var(--ink); background: var(--panel); }
+nav button[aria-current="page"] { color: var(--ink); background: var(--raised); }
+nav button[aria-current="page"] svg { color: var(--accent); }
+nav svg { width: 1.35em; height: 1.35em; flex: none; }
+.badge { margin-left: auto; background: var(--lime); color: var(--on-lime); border-radius: 1em; padding: 0 .55em; font-weight: 600; font-size: .85em; }
+.version { margin-top: auto; padding: .8rem; color: var(--muted); font-size: .9em; }
+
+/* ---- pages */
+main { overflow: auto; padding: var(--gap) clamp(1.2rem, 3vw, 3.5rem) calc(var(--gap) * 1.5); }
+section[hidden] { display: none; }
+h1 { font: 700 clamp(2.6rem, 4.2vw, 5rem)/.95 var(--display); letter-spacing: .01em; }
+h2 { font: 600 clamp(1.5rem, 1.6vw + .8rem, 2.2rem)/1.1 var(--display); letter-spacing: .02em; }
+p { max-width: 62ch; }
+.muted { color: var(--muted); }
+
+.primary, .quiet {
+  border-radius: 999px; padding: .75em 1.6em; font-weight: 600; border: 1.5px solid transparent; white-space: nowrap;
+}
+.primary { background: var(--lime); color: var(--on-lime); }
+.primary:hover { filter: brightness(1.08); }
+.primary:disabled { background: var(--raised); color: var(--muted); cursor: default; filter: none; }
+.quiet { background: none; border-color: var(--line); }
+.quiet:hover { border-color: var(--muted); }
+
+/* ---- watch */
+.status { display: flex; align-items: end; justify-content: space-between; gap: var(--gap); flex-wrap: wrap; }
+.status p { margin-top: .6rem; color: var(--muted); }
+
+/* The stage is the one loud thing: the cat from the logo looks over the far
+   edge of the keyboard, and the keys answer to the real keyboard. */
+.stage { margin-top: clamp(.5rem, 1.5vw, 1.5rem); position: relative; }
+.stage svg { display: block; width: 100%; height: auto; max-height: 58vh; overflow: visible; }
+.cat-body { fill: var(--ink); transition: fill .3s; }
+.cat-face { fill: var(--bg); }
+.eye { fill: var(--lime); transition: fill .3s; }
+.pupil { fill: #05070a; transition: transform .18s ease-out; }
+.lid { stroke: var(--muted); stroke-width: 6; stroke-linecap: round; fill: none; opacity: 0; }
+.sparks { stroke: var(--lime); stroke-width: 5; stroke-linecap: round; opacity: 0; transition: opacity .2s; }
+.keycap { fill: var(--key); stroke: var(--key-edge); stroke-width: 1.5; transition: fill .25s, stroke .25s; }
+.legend { fill: var(--key-ink); font: 600 17px var(--display); text-anchor: middle; pointer-events: none; transition: fill .25s; }
+.key.on .keycap { fill: var(--lime); stroke: var(--lime); transition: none; }
+.key.on .legend { fill: var(--on-lime); transition: none; }
+.key.blocked .keycap { fill: var(--raised); stroke: var(--muted); transition: none; }
+.deck { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; }
+
+body[data-mode="paused"] .cat-body { fill: var(--muted); }
+body[data-mode="paused"] .eye, body[data-mode="paused"] .pupil { opacity: 0; }
+body[data-mode="paused"] .lid { opacity: 1; }
+body[data-mode="locked"] .sparks { opacity: 1; }
+body[data-mode="locked"] .deck { stroke: var(--lime); }
+
+.below { display: grid; grid-template-columns: 1.3fr 1fr; gap: var(--gap); margin-top: var(--gap); align-items: start; }
+.try { border-left: 3px solid var(--accent); padding-left: 1.1rem; }
+.last { background: var(--panel); border-radius: 1.1rem; padding: 1.2rem 1.4rem; }
+.last button { background: none; border: 0; padding: 0; color: var(--accent); font-weight: 600; text-decoration: underline; text-underline-offset: .2em; margin-top: .5rem; }
+
+/* ---- incident */
+.timeline { background: var(--panel); border-radius: 1.1rem; padding: 1.3rem 1.5rem 1rem; margin-top: var(--gap); }
+.rows { position: relative; display: grid; gap: .3rem; }
+.row { display: grid; grid-template-columns: clamp(5rem, 9vw, 9rem) 1fr; align-items: center; min-height: 1.9rem; }
+.row .name { font: 600 1.15em var(--display); letter-spacing: .03em; }
+.track { position: relative; height: 1.25rem; }
+.bar { position: absolute; top: 0; bottom: 0; min-width: 5px; border-radius: 4px; background: var(--muted); }
+.bar.cat { background: var(--lime); }
+.bar.blocked { background: none; border: 1.5px solid var(--muted); }
+.bar.late span { left: auto; right: calc(100% + .5em); }
+.bar span { position: absolute; left: calc(100% + .5em); top: -.15em; white-space: nowrap; color: var(--muted); font-size: .85em; }
+.lockline { position: absolute; top: -.4rem; bottom: -.4rem; width: 2px; background: var(--ink); }
+.lockline span { position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); font: 600 1em var(--display); letter-spacing: .04em; white-space: nowrap; }
+.legendline { display: flex; gap: 1.6rem; flex-wrap: wrap; margin-top: 1.1rem; color: var(--muted); font-size: .9em; }
+.legendline i { display: inline-block; width: 1.4em; height: .75em; border-radius: 3px; margin-right: .5em; background: var(--muted); vertical-align: baseline; }
+.legendline i.cat { background: var(--lime); }
+.legendline i.blocked { background: none; border: 1.5px solid var(--muted); }
+
+.through { display: grid; grid-template-columns: 1.3fr 1fr; gap: var(--gap); margin-top: var(--gap); align-items: start; }
+.through ul { list-style: none; padding: 0; display: grid; gap: .8rem; margin-top: .8rem; }
+.through li { display: grid; grid-template-columns: auto 1fr; gap: 1rem; align-items: baseline; }
+kbd { font: 600 1.1em var(--display); letter-spacing: .04em; background: var(--key); border: 1.5px solid var(--key-edge); border-bottom-width: 3px; border-radius: .45rem; padding: .1em .55em; white-space: nowrap; }
+.undo { background: var(--panel); border-radius: 1.1rem; padding: 1.3rem 1.5rem; display: grid; gap: .9rem; justify-items: start; }
+.empty { margin-top: var(--gap); display: grid; gap: .6rem; }
+
+/* ---- settings */
+.settings { display: grid; gap: 0; margin-top: var(--gap); max-width: 70rem; }
+.setting { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1rem 2rem; align-items: center; padding: 1.3rem 0; border-top: 1px solid var(--line); }
+.setting h2 { font-size: clamp(1.3rem, 1vw + .9rem, 1.7rem); }
+.setting p { color: var(--muted); margin-top: .2rem; }
+.choice { display: flex; background: var(--panel); border-radius: 999px; padding: .25rem; border: 1px solid var(--line); }
+.choice button { border: 0; background: none; border-radius: 999px; padding: .5em 1.15em; color: var(--muted); font-weight: 600; }
+.choice button[aria-pressed="true"] { background: var(--lime); color: var(--on-lime); }
+.switch { width: 3.6rem; height: 2rem; border-radius: 1rem; border: 1.5px solid var(--line); background: var(--panel); position: relative; padding: 0; }
+.switch::after { content: ""; position: absolute; top: .2rem; left: .2rem; width: 1.4rem; height: 1.4rem; border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s; }
+.switch[aria-checked="true"] { background: var(--lime); border-color: var(--lime); }
+.switch[aria-checked="true"]::after { transform: translateX(1.6rem); background: var(--on-lime); }
+.pair { display: flex; gap: .7rem; align-items: center; }
+input[type="text"] { background: var(--panel); border: 1.5px solid var(--line); border-radius: .7rem; padding: .55em .9em; width: 11rem; font: 600 1.2em var(--display); letter-spacing: .08em; user-select: text; }
+
+@media (max-width: 860px) {
+  body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  nav { flex-direction: row; width: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: .6rem; overflow-x: auto; }
+  .brand, .version { display: none; }
+  .below, .through { grid-template-columns: 1fr; }
+  .setting { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body data-mode="watching">
+
+<nav aria-label="Pages">
+  <div class="brand"><b>CAT</b>GUARD</div>
+  <button data-page="watch" aria-current="page">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 11 5 3l5 4h4l5-4 1 8a8 8 0 0 1-16 0Z"/><path d="M9 12v1M15 12v1" stroke-linecap="round"/></svg>
+    Watch
+  </button>
+  <button data-page="incident">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h9M4 12h16M4 18h6"/></svg>
+    Incident <span class="badge" id="leak-badge" hidden></span>
+  </button>
+  <button data-page="settings">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 8h14M5 16h14"/><circle cx="9" cy="8" r="2.5" fill="var(--bg)"/><circle cx="15" cy="16" r="2.5" fill="var(--bg)"/></svg>
+    Settings
+  </button>
+  <div class="version" id="version"></div>
+</nav>
+
+<main>
+  <section id="watch">
+    <div class="status">
+      <div>
+        <h1 id="headline">Watching the keyboard.</h1>
+        <p id="subline"></p>
+      </div>
+      <button class="primary" id="pause"></button>
+    </div>
+    <div class="stage" id="stage"></div>
+    <div class="below">
+      <div class="try">
+        <h2>Try it</h2>
+        <p class="muted">Put your flat hand on three or four neighbouring keys. The keyboard locks, the harmonica plays, and you type <kbd id="word-hint">human</kbd> to get it back. Keys you press light up here, so you can see what catguard sees.</p>
+      </div>
+      <div class="last" id="last"></div>
+    </div>
+  </section>
+
+  <section id="incident" hidden>
+    <h1>What the cat did</h1>
+    <div id="incident-body"></div>
+  </section>
+
+  <section id="settings" hidden>
+    <h1>Settings</h1>
+    <div class="settings">
+      <div class="setting">
+        <div><h2>Sensitivity</h2><p id="sens-text"></p></div>
+        <div class="choice" data-setting="sensitivity">
+          <button data-value="relaxed">Relaxed</button><button data-value="normal">Normal</button><button data-value="kitten">Kitten</button>
+        </div>
+      </div>
+      <div class="setting">
+        <div><h2>Harmonica</h2><p>Cats dislike it. It plays when the keyboard locks and again on every further pawstep.</p></div>
+        <div class="pair"><button class="quiet" id="test-sound">Play it</button><button class="switch" role="switch" data-setting="sound" aria-label="Harmonica"></button></div>
+      </div>
+      <div class="setting">
+        <div><h2>Unlock word</h2><p>Typed blind while the keyboard is locked. Three to twelve letters, nothing a cat would walk.</p></div>
+        <div class="pair"><input type="text" id="word" maxlength="12" spellcheck="false" aria-label="Unlock word"><button class="quiet" id="save-word">Save</button></div>
+      </div>
+      <div class="setting">
+        <div><h2>Start with Windows</h2><p>catguard starts in the tray when you sign in, without opening this window.</p></div>
+        <button class="switch" role="switch" data-setting="autostart" aria-label="Start with Windows"></button>
+      </div>
+      <div class="setting">
+        <div><h2>Appearance</h2><p>The lock window is always dark, so that it is unmistakable.</p></div>
+        <div class="choice" data-setting="theme">
+          <button data-value="dark">Dark</button><button data-value="light">Light</button><button data-value="system">Like Windows</button>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = (sel, root = document) => root.querySelector(sel);
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+const send = (msg) => window.ipc ? window.ipc.postMessage(JSON.stringify(msg)) : demo(msg);
+
+// ------------------------------------------------------------------ keyboard
+// One entry per key: [scancode, width in key units, fallback legend].
+const ROWS = [
+  [[0x29,1,"`"],[2,1,"1"],[3,1,"2"],[4,1,"3"],[5,1,"4"],[6,1,"5"],[7,1,"6"],[8,1,"7"],[9,1,"8"],[10,1,"9"],[11,1,"0"],[12,1,"-"],[13,1,"="],[14,2,"Back"]],
+  [[15,1.5,"Tab"],[16,1,"Q"],[17,1,"W"],[18,1,"E"],[19,1,"R"],[20,1,"T"],[21,1,"Y"],[22,1,"U"],[23,1,"I"],[24,1,"O"],[25,1,"P"],[26,1,"["],[27,1,"]"],[43,1.5,"\\"]],
+  [[58,1.75,"Caps"],[30,1,"A"],[31,1,"S"],[32,1,"D"],[33,1,"F"],[34,1,"G"],[35,1,"H"],[36,1,"J"],[37,1,"K"],[38,1,"L"],[39,1,";"],[40,1,"'"],[28,2.25,"Enter"]],
+  [[42,1.25,"Shift"],[86,1,"<"],[44,1,"Z"],[45,1,"X"],[46,1,"C"],[47,1,"V"],[48,1,"B"],[49,1,"N"],[50,1,"M"],[51,1,","],[52,1,"."],[53,1,"/"],[54,2.75,"Shift"]],
+  [[29,1.5,"Ctrl"],[0xE05B,1.25,"Win"],[56,1.25,"Alt"],[57,6,""],[0xE038,1.25,"Alt"],[0xE05C,1.25,"Win"],[0xE01D,2.5,"Ctrl"]],
+];
+const U = 60, PAD = 18, TOP = 150; // key unit, deck padding, room for the cat
+const keyNodes = new Map();
+
+function buildStage(names) {
+  const W = 15 * U + 2 * PAD, H = TOP + 5 * U + 2 * PAD;
+  let keys = "";
+  ROWS.forEach((row, r) => {
+    let x = PAD;
+    for (const [code, w, fallback] of row) {
+      const label = (names && names[code]) || fallback;
+      const short = label.length > 5 ? label.slice(0, 5) : label;
+      keys += `<g class="key" data-code="${code}"><rect class="keycap" x="${x + 3}" y="${TOP + PAD + r * U + 3}" width="${w * U - 6}" height="${U - 6}" rx="9"/>` +
+              `<text class="legend" x="${x + w * U / 2}" y="${TOP + PAD + r * U + U / 2 + 6}">${short.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</text></g>`;
+      x += w * U;
+    }
+  });
+  const cx = W / 2;
+  $("#stage").innerHTML = `
+  <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="A cat looks over the keyboard. Keys light up when pressed.">
+    <g id="cat" transform="translate(${cx} ${TOP + 6})">
+      <path class="cat-body" d="M-118 0 C-118 -62 -96 -100 -92 -142 L-46 -104 C-30 -110 30 -110 46 -104 L92 -142 C96 -100 118 -62 118 0 Z"/>
+      <path class="cat-face" d="M-84 0 C-84 -40 -52 -66 0 -66 C52 -66 84 -40 84 0 Z"/>
+      <g id="eyes">
+        <ellipse class="eye" cx="-36" cy="-26" rx="19" ry="14" transform="rotate(12 -36 -26)"/>
+        <ellipse class="eye" cx="36" cy="-26" rx="19" ry="14" transform="rotate(-12 36 -26)"/>
+        <g class="pupil" id="pupils"><ellipse cx="-36" cy="-26" rx="5" ry="11"/><ellipse cx="36" cy="-26" rx="5" ry="11"/></g>
+        <path class="lid" d="M-52 -24 q16 12 32 0 M20 -24 q16 12 32 0"/>
+      </g>
+      <g class="sparks"><path d="M128 -120 l22 -30 M146 -84 l34 -14 M150 -44 l32 4"/><path d="M-128 -120 l-22 -30 M-146 -84 l-34 -14 M-150 -44 l-32 4"/></g>
+    </g>
+    <rect class="deck" x="1" y="${TOP}" width="${W - 2}" height="${5 * U + 2 * PAD}" rx="20"/>
+    ${keys}
+  </svg>`;
+  keyNodes.clear();
+  document.querySelectorAll(".key").forEach((g) => keyNodes.set(+g.dataset.code, g));
+}
+
+// The cat looks at the key that was pressed last.
+function lookAt(node) {
+  const stage = $("#stage svg").getBoundingClientRect(), box = node.getBoundingClientRect();
+  const dx = ((box.left + box.width / 2) - (stage.left + stage.width / 2)) / (stage.width / 2);
+  const dy = (box.top - stage.top) / stage.height;
+  $("#pupils").style.transform = `translate(${(dx * 9).toFixed(1)}px, ${(dy * 5).toFixed(1)}px)`;
+}
+
+const cg = window.cg = {
+  key(code, down, blocked) {
+    const node = keyNodes.get(code);
+    if (!node) return;
+    node.classList.toggle("on", down && !blocked);
+    node.classList.toggle("blocked", down && blocked);
+    if (down) lookAt(node);
+  },
+  state(s) { render(s); },
+  show(page) { show(page); },
+};
+
+// --------------------------------------------------------------------- pages
+function show(page) {
+  document.querySelectorAll("main > section").forEach((sec) => sec.hidden = sec.id !== page);
+  document.querySelectorAll("nav button").forEach((b) => b.dataset.page === page ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current"));
+}
+document.querySelectorAll("nav button").forEach((b) => b.onclick = () => show(b.dataset.page));
+
+const SENSITIVITY = {
+  relaxed: "Only a whole paw counts: three keys at once, or four in one spot. Pick this if you play games on this keyboard.",
+  normal: "A paw, two neighbouring keys held down, or a cat lying on the keys.",
+  kitten: "Small paws and light steps. Reacts sooner, and a clumsy hand can set it off.",
+};
+const RULES = { slam: "three keys at once", chord: "four keys in one spot", pair: "two neighbouring keys held", sit: "keys held for seconds" };
+let names = null, state = null;
+
+function render(s) {
+  state = s;
+  const theme = s.settings.theme === "system" ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark") : s.settings.theme;
+  document.documentElement.dataset.theme = theme;
+  if (s.key_names && !names) { names = s.key_names; buildStage(names); }
+
+  const mode = s.locked ? "locked" : s.paused ? "paused" : "watching";
+  document.body.dataset.mode = mode;
+  $("#headline").textContent = { watching: "Watching the keyboard.", paused: "Asleep. Nothing is guarded.", locked: "Keyboard locked." }[mode];
+  $("#subline").textContent = {
+    watching: s.stats.locks ? `Caught the cat ${s.stats.locks} ${s.stats.locks === 1 ? "time" : "times"} so far.` : "No cat so far.",
+    paused: "Every key goes through until you wake catguard.",
+    locked: `Type ${s.settings.word} on the keyboard to unlock.`,
+  }[mode];
+  $("#pause").textContent = s.paused ? "Wake catguard" : "Pause";
+  $("#pause").className = s.paused ? "primary" : "quiet";
+  $("#word-hint").textContent = s.settings.word;
+  $("#version").textContent = "catguard " + s.version;
+
+  const last = $("#last"); last.replaceChildren();
+  if (s.incident) {
+    last.append(el("h2", "", "Last lock"), el("p", "muted", `${s.incident.when}, ${RULES[s.incident.rule]}. ${leakSentence(s.incident)}`));
+    const more = el("button", "", "See what the cat did"); more.onclick = () => show("incident"); last.append(more);
+  } else {
+    last.append(el("h2", "", "Last lock"), el("p", "muted", "Nothing yet since catguard started. Incidents are kept in memory only and are gone when it exits."));
+  }
+  const n = s.incident ? s.incident.leaks.length : 0;
+  $("#leak-badge").hidden = n === 0; $("#leak-badge").textContent = n;
+
+  renderIncident(s.incident);
+
+  $("#sens-text").textContent = SENSITIVITY[s.settings.sensitivity];
+  document.querySelectorAll(".choice").forEach((group) => group.querySelectorAll("button").forEach((b) =>
+    b.setAttribute("aria-pressed", String(s.settings[group.dataset.setting] === b.dataset.value))));
+  document.querySelectorAll(".switch").forEach((sw) => sw.setAttribute("aria-checked", String(!!s.settings[sw.dataset.setting])));
+  if (document.activeElement !== $("#word")) $("#word").value = s.settings.word;
+}
+
+function leakSentence(incident) {
+  const n = incident.leaks.reduce((sum, l) => sum + l.count, 0);
+  return n === 0 ? "Nothing got through." : `${n} ${n === 1 ? "key press" : "key presses"} got through.`;
+}
+
+function renderIncident(incident) {
+  const body = $("#incident-body"); body.replaceChildren();
+  if (!incident) {
+    const empty = el("div", "empty");
+    empty.append(el("p", "muted", "No incident yet. When the keyboard locks, this page shows every key around that moment: how long it was down, and whether it reached your programs."));
+    return body.append(empty);
+  }
+  body.append(el("p", "muted", `${incident.when}, locked because of ${RULES[incident.rule]}. Focus was in “${incident.target || "no window"}”.`));
+
+  const tl = el("div", "timeline"), rows = el("div", "rows");
+  const span = incident.until - incident.from, pct = (t) => (Math.min(Math.max(t, incident.from), incident.until) - incident.from) / span * 100;
+  const byKey = new Map();
+  for (const p of incident.presses) { if (!byKey.has(p.name)) byKey.set(p.name, []); byKey.get(p.name).push(p); }
+  let track0 = null;
+  for (const [name, presses] of byKey) {
+    const row = el("div", "row"), track = el("div", "track");
+    row.append(el("div", "name", name), track); track0 ??= track;
+    for (const p of presses) {
+      const end = p.up ?? incident.until;
+      const bar = el("div", "bar" + (p.kind === "cat" ? " cat" : p.kind === "blocked" ? " blocked" : ""));
+      if (pct(end) > 80) bar.classList.add("late");
+      bar.style.left = pct(p.down) + "%"; bar.style.width = Math.max(pct(end) - pct(p.down), .4) + "%";
+      if (p.kind !== "blocked" && p === presses[presses.length - 1]) bar.append(el("span", "", `${Math.round((end - p.down) / 1000)} ms${p.repeats ? `, repeated ${p.repeats}×` : ""}`));
+      track.append(bar);
+    }
+    rows.append(row);
+  }
+  tl.append(rows);
+  const legend = el("div", "legendline");
+  for (const [cls, text] of [["cat", "reached your programs while the paw was down"], ["", "typed before"], ["blocked", "blocked"]]) {
+    const item = el("span"); item.append(el("i", cls), text); legend.append(item);
+  }
+  tl.append(legend); body.append(tl);
+  // The lock line sits in the first track so that it lines up with the bars.
+  if (track0) {
+    const line = el("div", "lockline"); line.append(el("span", "", "locked"));
+    line.style.left = pct(incident.locked_at) + "%"; line.style.height = `calc(${byKey.size} * 2.2rem)`; line.style.bottom = "auto";
+    track0.append(line); rows.style.marginTop = "1.6rem";
+  }
+
+  const through = el("div", "through"), left = el("div"), list = el("ul");
+  left.append(el("h2", "", incident.leaks.length ? "What got through" : "Nothing got through"));
+  for (const leak of incident.leaks) {
+    const li = el("li"), key = el("kbd", "", leak.name + (leak.count > 1 ? ` ×${leak.count}` : ""));
+    li.append(key, el("span", leak.note ? "" : "muted", leak.note ? leak.note[0].toUpperCase() + leak.note.slice(1) + "." : "Typed as text."));
+    list.append(li);
+  }
+  left.append(list);
+  const undo = el("div", "undo");
+  undo.append(el("h2", "", "Take it back"));
+  if (incident.undo.length) {
+    undo.append(el("p", "muted", `catguard switches to “${incident.target}” and will ${incident.undo.join(", then ")}.`));
+    const go = el("button", "primary", incident.undone ? "Done" : "Undo"); go.disabled = !!incident.undone; go.onclick = () => send({ cmd: "undo" });
+    undo.append(go);
+    if (incident.undo_note) undo.append(el("p", "muted", incident.undo_note));
+  } else {
+    undo.append(el("p", "muted", incident.leaks.length
+      ? "Keys cannot take this back. catguard sees keys, not what a program did with them, so check the window that had the focus."
+      : "There is nothing to take back."));
+  }
+  through.append(left, undo); body.append(through);
+}
+
+// ------------------------------------------------------------------ controls
+$("#pause").onclick = () => send({ cmd: "pause", value: !state.paused });
+$("#test-sound").onclick = () => send({ cmd: "test_sound" });
+document.querySelectorAll(".choice button").forEach((b) => b.onclick = () => send({ cmd: "set", key: b.parentElement.dataset.setting, value: b.dataset.value }));
+document.querySelectorAll(".switch").forEach((sw) => sw.onclick = () => send({ cmd: "set", key: sw.dataset.setting, value: sw.getAttribute("aria-checked") !== "true" }));
+const saveWord = () => { const w = $("#word").value.trim().toLowerCase(); if (/^[a-z]{3,12}$/.test(w)) send({ cmd: "set", key: "word", value: w }); else $("#word").value = state.settings.word; };
+$("#save-word").onclick = saveWord;
+$("#word").onkeydown = (e) => { if (e.key === "Enter") saveWord(); };
+matchMedia("(prefers-color-scheme: light)").onchange = () => state && render(state);
+
+// --------------------------------------------------- preview without the app
+function demo(msg) {
+  if (msg.cmd === "pause") state.paused = msg.value;
+  if (msg.cmd === "set") state.settings[msg.key] = msg.value;
+  if (msg.cmd === "undo") state.incident.undone = true;
+  render(state);
+}
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+buildStage(null);
+if (window.ipc) send({ cmd: "ready" });
+else {
+  const q = new URLSearchParams(location.search), t0 = 1_000_000;
+  const press = (name, down, up, kind, repeats = 0) => ({ name, down: t0 + down * 1000, up: up == null ? null : t0 + up * 1000, kind, repeats });
+  render({
+    version: "0.2.0", paused: q.get("mode") === "paused", locked: q.get("mode") === "locked", key_names: null,
+    stats: { locks: 12 },
+    settings: { sensitivity: "normal", sound: true, word: "human", autostart: true, theme: q.get("theme") || "dark" },
+    incident: q.has("empty") ? null : {
+      when: "Today 14:32", rule: "slam", target: "Quarterly report.docx - Word", from: t0, until: t0 + 3_400_000, locked_at: t0 + 3_006_000,
+      presses: [press("H", 300, 390, "human"), press("I", 520, 610, "human"), press("Caps Lock", 2100, 2260, "cat"), press("W", 3000, 3330, "cat"), press("E", 3003, 3340, "cat"), press("D", 3006, 3345, "blocked"), press("X", 3200, null, "blocked")],
+      leaks: [{ name: "Caps Lock", count: 1, note: "switched Caps Lock" }, { name: "W", count: 1, note: null }, { name: "E", count: 1, note: null }],
+      undo: ["press Caps Lock", "remove 2 characters"], undone: false, undo_note: "",
+    },
+  });
+  if (q.get("page")) show(q.get("page"));
+  if (q.get("mode") === "locked") { cg.key(17, true, false); cg.key(18, true, false); cg.key(32, true, true); }
+  else if (!q.get("mode")) { cg.key(36, true, false); }
+}
+</script>
+</body>
+</html>

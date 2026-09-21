@@ -54,6 +54,38 @@ pub struct Thresholds {
     pub stale_after: Micros,
 }
 
+/// How eagerly catguard locks. Named for the user, not for the numbers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Sensitivity {
+    /// Only the two rules that need a whole paw. For people who hold
+    /// neighbouring keys on purpose, which is every game with WASD.
+    Relaxed,
+    #[default]
+    Normal,
+    /// Light steps and small paws: wider windows, shorter holds.
+    Kitten,
+}
+
+impl Thresholds {
+    pub fn for_sensitivity(sensitivity: Sensitivity) -> Self {
+        let normal = Self::default();
+        match sensitivity {
+            Sensitivity::Normal => normal,
+            // A hold that never ends switches the rule off.
+            Sensitivity::Relaxed => Self { pair_hold: Micros::MAX, sit_hold: 3_000 * MS, ..normal },
+            Sensitivity::Kitten => Self {
+                slam_window: 80 * MS,
+                slam_row_window: 35 * MS,
+                pair_gap: 40 * MS,
+                pair_hold: 150 * MS,
+                sit_hold: 1_200 * MS,
+                ..normal
+            },
+        }
+    }
+}
+
 impl Default for Thresholds {
     fn default() -> Self {
         Self {
@@ -89,6 +121,11 @@ pub struct Detector {
 impl Detector {
     pub fn new(thresholds: Thresholds) -> Self {
         Self { thresholds, down: Vec::with_capacity(16), hit_since: 0 }
+    }
+
+    /// Takes effect with the next key. Keys that are down stay tracked.
+    pub fn set_thresholds(&mut self, thresholds: Thresholds) {
+        self.thresholds = thresholds;
     }
 
     /// When the first key of the pattern that fired last went down.
@@ -321,6 +358,22 @@ mod tests {
             assert_eq!(d.key_down(key_for('a'), i * 30 * MS), None);
         }
         assert_eq!(d.poll(1_600 * MS), None);
+    }
+
+    #[test]
+    fn relaxed_lets_a_gamer_hold_two_neighbours_and_kitten_is_quicker() {
+        let held_pair_at = |sensitivity, ms: u64| {
+            let mut d = Detector::new(Thresholds::for_sensitivity(sensitivity));
+            d.key_down(key_for('w'), 0);
+            d.key_down(key_for('a'), 5 * MS);
+            d.poll(ms * MS)
+        };
+        assert_eq!(held_pair_at(Sensitivity::Relaxed, 5_000), None);
+        assert_eq!(held_pair_at(Sensitivity::Normal, 160), None);
+        assert_eq!(held_pair_at(Sensitivity::Kitten, 160), Some(Rule::Pair));
+        // A whole paw still counts when relaxed.
+        let mut d = Detector::new(Thresholds::for_sensitivity(Sensitivity::Relaxed));
+        assert_eq!(press_all(&mut d, "wed", 4), Some(Rule::Slam));
     }
 
     #[test]

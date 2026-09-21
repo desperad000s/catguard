@@ -6,4 +6,5 @@ pub mod detector;
 pub mod guard;
 pub mod history;
 pub mod layout;
+pub mod settings;
 pub mod sound;

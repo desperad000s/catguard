@@ -6,28 +6,41 @@ Locks the keyboard when a cat steps on it. Runs in the Windows tray, plays a
 harmonica at the cat, and unlocks when you type `human`. Afterwards it shows
 which keys got through and takes back what keys can take back.
 
-The mouse and the touchpad stay free. One 450 KB exe, no installer, no
-runtime, no network access, no files written.
+The mouse and the touchpad stay free. One exe under 1 MB, no installer, no
+network access. The only file it writes is its settings.
 
 ## Use it
 
-Start `catguard.exe`. A cat head appears in the tray: lime eyes while it
-watches, grey while paused. Its menu: last incident, pause, start with
-Windows, exit.
+Start `catguard.exe`. A round cat icon appears in the tray: a lime ring while
+it watches, a grey one while it is paused. A left click opens the app, a
+right click has pause and exit.
 
-When a paw lands, a small window says so and the keyboard goes dead. Type
+When a paw lands, a black window says so and the keyboard goes dead. Type
 `human` (you do not need to click anything first) or click the button. Keys
 the cat is still standing on stay dead until it lets go.
 
 `Ctrl+Alt+Del` always works. Windows does not let any program intercept it.
 
+The app has three pages:
+
+- **Watch** shows whether catguard is on, and a keyboard whose keys light up
+  as you press them, so you can try a flat hand and see what catguard sees.
+- **Incident** shows the last lock: see the next section.
+- **Settings**: sensitivity (relaxed for gamers, normal, kitten), the
+  harmonica, the unlock word, start with Windows, dark or light.
+
+The app window is a WebView2 page that exists only while it is open. Closed,
+catguard is the keyboard hook and a tray icon. WebView2 is part of Windows 11
+and of current Windows 10. Without it the guard still works and only the
+window is missing.
+
 ## What the cat did
 
-The lock window draws a timeline: one row per key, one bar per press, as long
-as the key was down. Lime bars reached your programs before the lock fell,
-light bars are what you typed in the three seconds before, dark bars were
-blocked. After the unlock the window stays open if anything got through, and
-the tray menu brings it back later.
+The incident page draws a timeline: one row per key, one bar per press, as
+long as the key was down. Lime bars reached your programs while the paw was
+down, grey bars are what you typed in the three seconds before, outlined bars
+were blocked. If anything got through, the app opens on this page right after
+the unlock.
 
 Below the timeline catguard names what got through. For combinations it knows
 (Alt+F4, Ctrl+W, Win+D, Caps Lock, mute, the touchpad key, about thirty
@@ -41,8 +54,10 @@ The undo button does two things and says which before you click:
   what laptops with a precision touchpad send for the touchpad key. Win+M is
   answered with Win+Shift+M.
 - It sends Backspace once per typed character, but only if characters were
-  all that arrived, the same window still has the focus, and you have not
-  typed since.
+  all that arrived and you have not typed since.
+
+Undo first hands the focus back to the window the cat typed into, and types
+nothing if that window is gone.
 
 What it cannot do: catguard sees keys, not what a program did with them. A
 closed tab or a deleted file is the program's to restore. And anything the Fn
@@ -88,6 +103,8 @@ from reasoning about hands and paws, not yet from recordings of real cats.
   (W+A) looks like a paw. Use Pause in the tray menu.
 - Windows hides keystrokes that go to an elevated window from a program that
   is not elevated. While an admin window has the focus, catguard sees nothing.
+- The exe is not code-signed, so browsers and SmartScreen warn about an
+  unknown publisher. See "Signing" below.
 - A global keyboard hook is also what a keylogger uses, so antivirus software
   may ask questions about an unsigned build. Read `src/win.rs` and
   `src/history.rs`: the hook keeps the last three seconds of key codes in
@@ -101,10 +118,34 @@ from reasoning about hands and paws, not yet from recordings of real cats.
 
 ```
 cargo test                      # the detection core, on any OS
-cargo build --release           # on Windows
-cargo build --release --target x86_64-pc-windows-gnu   # from Linux, needs mingw-w64
+cargo build --release           # on Windows, MSVC toolchain
+cargo xwin build --release --target x86_64-pc-windows-msvc   # from Linux
 python3 assets/make_icons.py    # regenerate the .ico files, needs Pillow
 ```
+
+The Linux build needs `cargo install cargo-xwin` plus `lld` and `llvm`
+(`lld-link`, `llvm-rc`). The MSVC target matters: it links the WebView2
+loader and the C runtime statically, so the result is a single exe. The GNU
+target would need `WebView2Loader.dll` next to it.
+
+To look at the app without Windows, open `ui/index.html` in a browser. It
+runs on demo data there: `?page=incident`, `?page=settings`, `?theme=light`,
+`?mode=paused`, `?mode=locked`.
+
+## Signing
+
+Windows and Chrome warn because nobody has vouched for the exe. No setting in
+the program changes that. A publisher name needs a certificate, and even
+with one SmartScreen keeps warning until enough people have installed the
+signed file. The realistic routes for this project:
+
+- SignPath Foundation signs open-source projects for free. It wants a public
+  repository, an OSI licence, a release, and a build that runs in CI.
+- Azure Artifact Signing, about 10 USD a month, is open to companies in the
+  EU and to individuals in the USA and Canada.
+
+Until then: the exe carries a manifest and version information, and the
+download page should publish its SHA-256.
 
 ## Layout
 
@@ -113,7 +154,9 @@ python3 assets/make_icons.py    # regenerate the .ico files, needs Pillow
 - `src/guard.rs`: lock state, which events get swallowed, the unlock word
 - `src/history.rs`: the three-second history, known shortcuts, the undo plan
 - `src/sound.rs`: the synthesized harmonica
-- `src/win.rs`: hook thread, tray, lock window, timeline, undo
+- `src/settings.rs`: the settings file and its sanitizing
+- `src/win.rs`: hook thread, tray, lock window, the app window and its messages
+- `ui/index.html`: the app, one file, no build step
 - `assets/`: icons, cut and drawn by `make_icons.py` from `src/icon-sheet.png`
 
 ## Credit

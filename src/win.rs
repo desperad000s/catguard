@@ -1,38 +1,55 @@
-//! Windows shell around the core: a low-level keyboard hook on its own
-//! thread, a tray icon, the lock window and the sound.
+//! Windows shell around the core.
 //!
-//! Two threads, and the split matters. Windows calls a low-level hook for
-//! every keystroke of the whole system and drops the hook silently when it
-//! answers too slowly. So the hook thread does nothing but run the guard. It
-//! tells the UI thread what happened with `PostMessageW` and never waits for
-//! it. The other direction uses two atomics.
+//! Two threads, and the split matters. Windows calls a low-level keyboard
+//! hook for every keystroke of the whole system and drops the hook silently
+//! when it answers too slowly. So the hook thread does nothing but run the
+//! guard. It tells the UI thread what happened by posting messages and never
+//! waits for it. The other direction uses atomics.
+//!
+//! The UI thread runs tao's event loop. That loop also pumps the messages of
+//! two plain Win32 windows: a hidden one that owns the tray icon, and the
+//! lock window, which has to appear at once and must never take the focus.
+//! The app window is a WebView2 page. It is created when opened and dropped
+//! when closed, so the background process stays small.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
+use std::path::PathBuf;
 use std::ptr::{null, null_mut};
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
-use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering::Relaxed};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, Instant};
 
-use catguard::detector::{Rule, Thresholds};
-use catguard::guard::{Action, Guard, UNLOCK_WORD};
+use catguard::detector::{Rule, Sensitivity, Thresholds};
+use catguard::guard::{Action, Guard};
 use catguard::history::{Incident, Mods, UndoStep, LOOKBACK};
-use catguard::layout::EXTENDED;
+use catguard::layout::{is_printable, EXTENDED};
+use catguard::settings::Settings;
 use catguard::sound::harmonica_wav;
+
+use serde_json::{json, Value};
+use tao::dpi::LogicalSize;
+use tao::event::{Event, WindowEvent};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
+use tao::platform::windows::{IconExtWindows, WindowExtWindows};
+use tao::window::{Icon, Theme, Window, WindowBuilder};
+use wry::http::{header::CONTENT_TYPE, Response};
+use wry::{WebContext, WebView, WebViewBuilder, WebViewBuilderExtWindows};
 
 use windows_sys::w;
 use windows_sys::Win32::Foundation::*;
+use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Registry::*;
+use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 use windows_sys::Win32::System::Threading::{
     CreateMutexW, GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
 };
-use windows_sys::Win32::UI::HiDpi::{
-    GetDpiForSystem, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-};
+use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::Shell::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
@@ -40,54 +57,103 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 const WM_TRAY: u32 = WM_APP + 1;
 /// Hook thread to UI thread. `wparam` is one of the `GUARD_*` codes.
 const WM_GUARD: u32 = WM_APP + 2;
+/// A second catguard.exe was started: show the window of this one.
+const WM_OPEN: u32 = WM_APP + 3;
 const GUARD_LOCK: usize = 0;
 const GUARD_DETER: usize = 1;
 const GUARD_PROGRESS: usize = 2;
 const GUARD_UNLOCK: usize = 3;
-/// Keys changed while locked: redraw the timeline.
+/// Keys changed while locked: the incident has new bars.
 const GUARD_REFRESH: usize = 4;
 
 const ID_PAUSE: usize = 1;
-const ID_AUTOSTART: usize = 2;
+const ID_OPEN: usize = 2;
 const ID_EXIT: usize = 3;
-const ID_INCIDENT: usize = 4;
-
 const BTN_HUMAN: usize = 10;
-const BTN_UNDO: usize = 11;
-const BTN_CLOSE: usize = 12;
-
+const ICON_APP: usize = 1;
 const ICON_ACTIVE: usize = 2;
 const ICON_PAUSED: usize = 3;
 
 const POLL_MS: u32 = 25;
 
-static PAUSED: AtomicBool = AtomicBool::new(false);
-static UNLOCK_CLICKED: AtomicBool = AtomicBool::new(false);
-/// The lock window shows the incident after the unlock instead of the lock.
-static IN_REVIEW: AtomicBool = AtomicBool::new(false);
+/// What reaches tao's event loop from the hook thread, the window procedure
+/// and the web page.
+enum UserEvent {
+    /// Show the app window, on this page if one is given.
+    Open(Option<&'static str>),
+    /// Something the page shows has changed.
+    Push,
+    /// A key moved: scancode, down, swallowed. Only sent while the app is open.
+    Key(u32, bool, bool),
+    /// A JSON message from the page.
+    Ipc(String),
+    Quit,
+}
 
+static PROXY: OnceLock<EventLoopProxy<UserEvent>> = OnceLock::new();
+
+fn notify(event: UserEvent) {
+    if let Some(proxy) = PROXY.get() {
+        let _ = proxy.send_event(event);
+    }
+}
+
+static PAUSED: AtomicBool = AtomicBool::new(false);
+static LOCKED: AtomicBool = AtomicBool::new(false);
+static UNLOCK_CLICKED: AtomicBool = AtomicBool::new(false);
+static APP_OPEN: AtomicBool = AtomicBool::new(false);
+static APP_HWND: AtomicIsize = AtomicIsize::new(0);
 /// A key reached the programs after the last unlock. Backspace would then
 /// delete what the human typed, not what the cat typed.
 static TYPED_SINCE_UNLOCK: AtomicBool = AtomicBool::new(false);
+
+static SETTINGS: OnceLock<Mutex<Settings>> = OnceLock::new();
+/// Bumped on every change, so that the hook thread notices without a lock.
+static SETTINGS_GEN: AtomicU32 = AtomicU32::new(1);
+
+fn settings() -> MutexGuard<'static, Settings> {
+    SETTINGS.get_or_init(|| Mutex::new(Settings::load(&settings_path()))).lock().unwrap()
+}
+
+fn change_settings(change: impl FnOnce(&mut Settings)) {
+    let mut settings = settings();
+    change(&mut settings);
+    *settings = settings.clone().sanitized();
+    let _ = settings.save(&settings_path());
+    SETTINGS_GEN.fetch_add(1, Relaxed);
+}
+
+fn settings_path() -> PathBuf {
+    PathBuf::from(std::env::var_os("APPDATA").unwrap_or_default()).join("catguard").join("settings.json")
+}
 
 /// The hook thread writes a fresh snapshot here whenever it posts `WM_GUARD`,
 /// which only happens around a lock. Normal typing never touches this mutex.
 static INCIDENT: Mutex<Option<Incident>> = Mutex::new(None);
 
-/// The window that had the focus when the lock fell. Undo only types into it.
-static TARGET: Mutex<(isize, String)> = Mutex::new((0, String::new()));
+/// What the UI thread noted when the lock fell.
+struct LockInfo {
+    /// The window that had the focus. Undo only types into this one.
+    target: isize,
+    title: String,
+    when: String,
+    undone: bool,
+    undo_note: String,
+}
 
-/// Window handles as integers, because raw pointers are not `Sync`.
+static LOCK_INFO: Mutex<LockInfo> =
+    Mutex::new(LockInfo { target: 0, title: String::new(), when: String::new(), undone: false, undo_note: String::new() });
+
+/// Native window handles as integers, because raw pointers are not `Sync`.
 struct Ui {
     main: isize,
     lock: isize,
-    detail: isize,
     progress: isize,
     human: isize,
-    summary: isize,
-    undo: isize,
-    close: isize,
-    small_font: isize,
+    detail: isize,
+    dark_brush: isize,
+    lime_brush: isize,
+    icon: isize,
     dpi: i32,
     wav: &'static [u8],
     taskbar_created: u32,
@@ -95,43 +161,86 @@ struct Ui {
 
 static UI: OnceLock<Ui> = OnceLock::new();
 
+struct App {
+    window: Window,
+    webview: WebView,
+    /// The page has loaded and can take `cg.state(...)`.
+    ready: bool,
+    page: Option<&'static str>,
+}
+
 pub fn run() {
+    let background = std::env::args().any(|arg| arg == "--background");
     unsafe {
         CreateMutexW(null(), 0, w!("Local\\catguard-single-instance"));
         if GetLastError() == ERROR_ALREADY_EXISTS {
+            let running = FindWindowW(w!("catguard-main"), null());
+            if !running.is_null() {
+                PostMessageW(running, WM_OPEN, 0, 0);
+            }
             return;
         }
-        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-
-        let instance = GetModuleHandleW(null());
-        let class = WNDCLASSW {
-            lpfnWndProc: Some(wnd_proc),
-            hInstance: instance,
-            hCursor: LoadCursorW(null_mut(), IDC_ARROW),
-            hbrBackground: (COLOR_BTNFACE + 1) as HBRUSH,
-            lpszClassName: w!("catguard"),
-            ..zeroed()
-        };
-        RegisterClassW(&class);
-
-        // A hidden top-level window, not a message-only one: only top-level
-        // windows hear the TaskbarCreated broadcast.
-        let main = CreateWindowExW(
-            0, class.lpszClassName, w!("catguard"), WS_OVERLAPPED,
-            0, 0, 0, 0, null_mut(), null_mut(), instance, null(),
-        );
-        let mut ui = create_lock_window(instance);
-        ui.main = main as isize;
-        let _ = UI.set(ui);
-        tray(NIM_ADD);
-        std::thread::spawn(hook_thread);
-
-        let mut msg: MSG = zeroed();
-        while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
     }
+
+    let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    let _ = PROXY.set(event_loop.create_proxy());
+    unsafe {
+        let _ = UI.set(create_native_windows());
+        tray(NIM_ADD);
+    }
+    std::thread::spawn(hook_thread);
+    if !background {
+        notify(UserEvent::Open(None));
+    }
+
+    let local = PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default());
+    let mut web_context = WebContext::new(Some(local.join("catguard").join("webview")));
+    let mut app: Option<App> = None;
+    event_loop.run(move |event, target, control_flow| {
+        *control_flow = ControlFlow::Wait;
+        match event {
+            Event::UserEvent(UserEvent::Open(page)) => {
+                if app.is_none() {
+                    match open_app(target, &mut web_context) {
+                        Ok(opened) => app = Some(opened),
+                        Err(reason) => unsafe {
+                            let text = format!("catguard could not open its window. The keyboard is still guarded.\n\nThe window needs the Microsoft Edge WebView2 Runtime, which is part of Windows 11 and of current Windows 10.\n\n{reason}");
+                            MessageBoxW(null_mut(), wide(&text).as_ptr(), w!("catguard"), MB_ICONWARNING);
+                        },
+                    }
+                }
+                if let Some(app) = &mut app {
+                    app.page = page.or(app.page);
+                    if app.ready {
+                        reveal(app);
+                    }
+                }
+            }
+            Event::UserEvent(UserEvent::Push) => {
+                if let Some(app) = app.as_ref().filter(|app| app.ready) {
+                    push_state(app, false);
+                }
+            }
+            Event::UserEvent(UserEvent::Key(code, down, blocked)) => {
+                if let Some(app) = app.as_ref().filter(|app| app.ready) {
+                    let _ = app.webview.evaluate_script(&format!("cg.key({code},{down},{blocked})"));
+                }
+            }
+            Event::UserEvent(UserEvent::Ipc(message)) => {
+                if let Some(app) = &mut app {
+                    on_ipc(app, &message);
+                }
+            }
+            Event::UserEvent(UserEvent::Quit) => *control_flow = ControlFlow::Exit,
+            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
+                // Dropping the webview ends the WebView2 processes.
+                APP_OPEN.store(false, Relaxed);
+                APP_HWND.store(0, Relaxed);
+                app = None;
+            }
+            _ => {}
+        }
+    });
 }
 
 // ---------------------------------------------------------------- hook thread
@@ -140,6 +249,7 @@ struct HookState {
     guard: Guard,
     started: Instant,
     timer: usize,
+    settings_seen: u32,
 }
 
 thread_local! {
@@ -147,6 +257,7 @@ thread_local! {
         guard: Guard::new(Thresholds::default()),
         started: Instant::now(),
         timer: 0,
+        settings_seen: 0,
     });
 }
 
@@ -197,13 +308,23 @@ fn on_key(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
         if UNLOCK_CLICKED.swap(false, Relaxed) {
             state.guard.unlock();
         }
+        // One atomic load per key. The mutex is only taken after a change.
+        let generation = SETTINGS_GEN.load(Relaxed);
+        if generation != state.settings_seen {
+            state.settings_seen = generation;
+            let settings = settings().clone();
+            state.guard.set_thresholds(Thresholds::for_sensitivity(settings.sensitivity));
+            state.guard.set_unlock_word(&settings.word);
+        }
 
         let extended = if event.flags & LLKHF_EXTENDED != 0 { EXTENDED } else { 0 };
         let key = event.scanCode as u16 | extended;
         let now = state.started.elapsed().as_micros() as u64;
         let verdict = if message == WM_KEYDOWN || message == WM_SYSKEYDOWN {
             let verdict = state.guard.key_down(key, event.vkCode as u8, now);
-            if !verdict.swallow {
+            // Typing into catguard's own window does not change the text the
+            // cat typed into, so it does not rule out Backspace.
+            if !verdict.swallow && unsafe { GetForegroundWindow() } as isize != APP_HWND.load(Relaxed) {
                 TYPED_SINCE_UNLOCK.store(true, Relaxed);
             }
             verdict
@@ -211,6 +332,10 @@ fn on_key(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
             state.guard.key_up(key, now)
         };
 
+        if APP_OPEN.load(Relaxed) {
+            let down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
+            notify(UserEvent::Key(u32::from(key), down, verdict.swallow));
+        }
         if verdict.action.is_some() || state.guard.is_locked() {
             *INCIDENT.lock().unwrap() = state.guard.incident(now);
             post(verdict.action);
@@ -252,191 +377,156 @@ fn post(action: Option<Action>) {
     unsafe { PostMessageW(ui.main as HWND, WM_GUARD, code, detail) };
 }
 
-// ------------------------------------------------------------------ UI thread
+// ----------------------------------------------------------------- app window
 
-unsafe extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    let Some(ui) = UI.get() else {
-        return DefWindowProcW(hwnd, message, wparam, lparam);
+fn open_app(target: &EventLoopWindowTarget<UserEvent>, web_context: &mut WebContext) -> Result<App, String> {
+    let theme = match settings().theme.as_str() {
+        "light" => Some(Theme::Light),
+        "system" => None,
+        _ => Some(Theme::Dark),
     };
-    match message {
-        WM_GUARD => {
-            match wparam {
-                GUARD_LOCK => show_lock(ui, lparam),
-                GUARD_DETER => {
-                    play(ui);
-                    refresh(ui);
-                }
-                GUARD_PROGRESS => {
-                    set_progress(ui, lparam as usize);
-                    refresh(ui);
-                }
-                GUARD_UNLOCK => show_review(ui),
-                _ => refresh(ui),
-            }
-            0
-        }
-        WM_COMMAND if hwnd as isize == ui.lock => {
-            match wparam & 0xFFFF {
-                BTN_HUMAN => {
-                    UNLOCK_CLICKED.store(true, Relaxed);
-                    show_review(ui);
-                }
-                BTN_UNDO => undo(ui),
-                _ => hide_lock(ui),
-            }
-            0
-        }
-        WM_PAINT if hwnd as isize == ui.lock => {
-            let mut paint: PAINTSTRUCT = zeroed();
-            let hdc = BeginPaint(hwnd, &mut paint);
-            paint_timeline(ui, hdc);
-            EndPaint(hwnd, &paint);
-            0
-        }
-        WM_CLOSE if hwnd as isize == ui.lock => 0,
-        WM_TRAY => {
-            if matches!(lparam as u32, WM_LBUTTONUP | WM_RBUTTONUP) {
-                tray_menu(ui);
-            }
-            0
-        }
-        WM_DESTROY if hwnd as isize == ui.main => {
-            tray(NIM_DELETE);
-            PostQuitMessage(0);
-            0
-        }
-        _ if message == ui.taskbar_created => {
-            // Explorer restarted and lost every tray icon.
-            tray(NIM_ADD);
-            0
-        }
-        _ => DefWindowProcW(hwnd, message, wparam, lparam),
-    }
+    let window = WindowBuilder::new()
+        .with_title("catguard")
+        .with_inner_size(LogicalSize::new(1180.0, 800.0))
+        .with_min_inner_size(LogicalSize::new(760.0, 560.0))
+        .with_window_icon(Icon::from_resource(ICON_APP as u16, None).ok())
+        .with_theme(theme)
+        // Shown once the page has rendered, so that no white frame flashes.
+        .with_visible(false)
+        .build(target)
+        .map_err(|e| e.to_string())?;
+    let webview = WebViewBuilder::new_with_web_context(web_context)
+        .with_custom_protocol("cg".into(), |_id, request| serve(request.uri().path()))
+        .with_url("cg://localhost/index.html")
+        .with_ipc_handler(|request| notify(UserEvent::Ipc(request.body().clone())))
+        .with_background_color((5, 7, 10, 255))
+        .with_browser_accelerator_keys(false)
+        .build(&window)
+        .map_err(|e| e.to_string())?;
+    APP_HWND.store(window.hwnd() as isize, Relaxed);
+    Ok(App { window, webview, ready: false, page: None })
 }
 
-fn wide(text: &str) -> Vec<u16> {
-    text.encode_utf16().chain(Some(0)).collect()
-}
-
-unsafe fn create_lock_window(instance: HINSTANCE) -> Ui {
-    let dpi = GetDpiForSystem() as i32;
-    let px = |n: i32| n * dpi / 96;
-    let (style, ex_style) = (WS_POPUP | WS_DLGFRAME, WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
-    let mut frame = RECT { left: 0, top: 0, right: px(560), bottom: px(516) };
-    AdjustWindowRectEx(&mut frame, style, 0, ex_style);
-    let (width, height) = (frame.right - frame.left, frame.bottom - frame.top);
-
-    // WS_EX_NOACTIVATE keeps the focus where the human left it. The hook sees
-    // the unlock word anyway, so this window never needs the keyboard. It is
-    // also what lets the undo button type into the window behind it.
-    let lock = CreateWindowExW(
-        ex_style, w!("catguard"), w!("catguard"), style,
-        (GetSystemMetrics(SM_CXSCREEN) - width) / 2,
-        (GetSystemMetrics(SM_CYSCREEN) - height) / 2,
-        width, height, null_mut(), null_mut(), instance, null(),
-    );
-
-    let font = |points: i32, weight: i32, face: *const u16| {
-        CreateFontW(
-            -(points * dpi / 72), 0, 0, 0, weight, 0, 0, 0,
-            DEFAULT_CHARSET as u32, 0, 0, CLEARTYPE_QUALITY as u32, 0, face,
-        )
+/// The page and its fonts are compiled into the exe.
+fn serve(path: &str) -> Response<Cow<'static, [u8]>> {
+    let (mime, body): (&str, &'static [u8]) = match path {
+        "/index.html" => ("text/html; charset=utf-8", include_bytes!("../ui/index.html")),
+        "/fonts/barlow-condensed-600.woff2" => ("font/woff2", include_bytes!("../ui/fonts/barlow-condensed-600.woff2")),
+        "/fonts/barlow-condensed-700.woff2" => ("font/woff2", include_bytes!("../ui/fonts/barlow-condensed-700.woff2")),
+        _ => ("text/plain", b"not found"),
     };
-    let child = |class: *const u16, text: *const u16, style: u32, id: usize, rect: [i32; 4], font: HFONT| {
-        let [x, y, w, h] = rect.map(px);
-        let hwnd = CreateWindowExW(
-            0, class, text, WS_CHILD | WS_VISIBLE | style,
-            x, y, w, h, lock, id as HMENU, instance, null(),
-        );
-        SendMessageW(hwnd, WM_SETFONT, font as WPARAM, 1);
-        hwnd as isize
-    };
+    let status = if body == b"not found" { 404 } else { 200 };
+    Response::builder().status(status).header(CONTENT_TYPE, mime).body(Cow::Borrowed(body)).unwrap()
+}
 
-    // SS_CENTER. windows-sys files it under SystemServices, a whole feature
-    // for one constant.
-    let center = 1;
-    let body = font(10, FW_NORMAL as i32, w!("Segoe UI"));
-    let button = BS_PUSHBUTTON as u32;
-    child(w!("STATIC"), w!("Cat-like typing detected"), center, 0, [24, 18, 512, 34], font(18, FW_SEMIBOLD as i32, w!("Segoe UI")));
-    Ui {
-        main: 0,
-        lock: lock as isize,
-        detail: child(w!("STATIC"), null(), center, 0, [24, 56, 512, 40], body),
-        progress: child(w!("STATIC"), null(), center, 0, [24, 100, 512, 32], font(16, FW_NORMAL as i32, w!("Consolas"))),
-        human: child(w!("BUTTON"), w!("I am human"), button, BTN_HUMAN, [200, 138, 160, 34], body),
-        summary: child(w!("STATIC"), null(), 0, 0, [24, 364, 512, 92], body),
-        undo: child(w!("BUTTON"), null(), button, BTN_UNDO, [24, 466, 344, 34], body),
-        close: child(w!("BUTTON"), w!("Close"), button, BTN_CLOSE, [384, 466, 152, 34], body),
-        small_font: font(9, FW_NORMAL as i32, w!("Segoe UI")) as isize,
-        dpi,
-        wav: Box::leak(harmonica_wav().into_boxed_slice()),
-        taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
+fn reveal(app: &mut App) {
+    if let Some(page) = app.page.take() {
+        let _ = app.webview.evaluate_script(&format!("cg.show('{page}')"));
+    }
+    app.window.set_visible(true);
+    app.window.set_minimized(false);
+    app.window.set_focus();
+}
+
+fn push_state(app: &App, with_key_names: bool) {
+    let state = unsafe { state_json(with_key_names) };
+    let _ = app.webview.evaluate_script(&format!("cg.state({state})"));
+}
+
+fn on_ipc(app: &mut App, message: &str) {
+    let Ok(message) = serde_json::from_str::<Value>(message) else { return };
+    let value = &message["value"];
+    match message["cmd"].as_str().unwrap_or_default() {
+        "ready" => {
+            app.ready = true;
+            APP_OPEN.store(true, Relaxed);
+            push_state(app, true);
+            return reveal(app);
+        }
+        "pause" => unsafe { set_paused(value.as_bool().unwrap_or(false)) },
+        "test_sound" => unsafe { play(true) },
+        "undo" => unsafe { undo() },
+        "set" => match (message["key"].as_str().unwrap_or_default(), value) {
+            ("sensitivity", Value::String(_)) => {
+                if let Ok(sensitivity) = serde_json::from_value::<Sensitivity>(value.clone()) {
+                    change_settings(|s| s.sensitivity = sensitivity);
+                }
+            }
+            ("word", Value::String(word)) => change_settings(|s| s.word = word.clone()),
+            ("theme", Value::String(theme)) => change_settings(|s| s.theme = theme.clone()),
+            ("sound", Value::Bool(on)) => change_settings(|s| s.sound = *on),
+            ("autostart", Value::Bool(on)) => unsafe { set_autostart(*on) },
+            _ => {}
+        },
+        _ => {}
+    }
+    push_state(app, false);
+}
+
+/// Everything the page shows, as one JSON object.
+unsafe fn state_json(with_key_names: bool) -> Value {
+    let settings = settings().clone();
+    let info = LOCK_INFO.lock().unwrap();
+    let incident = INCIDENT.lock().unwrap().clone().map(|incident| {
+        let from = incident.locked_at.saturating_sub(LOOKBACK);
+        let until = incident.taken_at.max(incident.locked_at + 100_000);
+        let presses: Vec<Value> = incident
+            .presses
+            .iter()
+            .filter(|p| p.up.unwrap_or(until) >= from)
+            .map(|p| {
+                let kind = if !p.passed { "blocked" } else if incident.during_paw(p) { "cat" } else { "human" };
+                json!({ "name": key_name(u32::from(p.key & 0xFF), p.key & EXTENDED != 0), "down": p.down, "up": p.up, "kind": kind, "repeats": p.repeats })
+            })
+            .collect();
+        let leaks: Vec<Value> = incident
+            .leaks()
+            .iter()
+            .map(|l| json!({ "name": combo_name(l.mods, l.vk), "count": l.count, "note": l.note }))
+            .collect();
+        let undo: Vec<String> = incident
+            .undo_plan()
+            .iter()
+            .map(|step| match step {
+                UndoStep::Press(mods, vk) => format!("press {}", combo_name(*mods, *vk)),
+                UndoStep::Backspace(n) => format!("remove {n} characters"),
+            })
+            .collect();
+        json!({
+            "when": info.when, "rule": rule_name(incident.rule), "target": info.title,
+            "from": from, "until": until, "locked_at": incident.locked_at,
+            "presses": presses, "leaks": leaks, "undo": undo, "undone": info.undone, "undo_note": info.undo_note,
+        })
+    });
+    let key_names = with_key_names.then(|| {
+        let names: serde_json::Map<String, Value> = (0u16..0x60)
+            .filter(|&code| is_printable(code) && code != 0x39)
+            .map(|code| (code.to_string(), Value::from(key_name(u32::from(code), false))))
+            .collect();
+        Value::Object(names)
+    });
+    json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "paused": PAUSED.load(Relaxed),
+        "locked": LOCKED.load(Relaxed),
+        "key_names": key_names,
+        "stats": { "locks": settings.locks },
+        "settings": {
+            "sensitivity": settings.sensitivity, "sound": settings.sound, "word": settings.word,
+            "theme": settings.theme, "autostart": autostart_enabled(),
+        },
+        "incident": incident,
+    })
+}
+
+fn rule_name(rule: Rule) -> &'static str {
+    match rule {
+        Rule::Slam => "slam",
+        Rule::Chord => "chord",
+        Rule::Pair => "pair",
+        Rule::Sit => "sit",
     }
 }
-
-unsafe fn show_lock(ui: &Ui, rule: isize) {
-    const RULES: [(Rule, &str); 4] = [
-        (Rule::Slam, "three keys at once"),
-        (Rule::Chord, "four keys in one spot"),
-        (Rule::Pair, "two neighbouring keys held"),
-        (Rule::Sit, "keys held for seconds"),
-    ];
-    let reason = RULES.iter().find(|(r, _)| *r as isize == rule).map_or("", |(_, text)| text);
-    let text = format!("The keyboard is locked ({reason}).\nType  human  to unlock it, or click the button.");
-    SetWindowTextW(ui.detail as HWND, wide(&text).as_ptr());
-    set_progress(ui, 0);
-
-    let focus = GetForegroundWindow();
-    let mut title = [0u16; 128];
-    let len = GetWindowTextW(focus, title.as_mut_ptr(), title.len() as i32).max(0) as usize;
-    *TARGET.lock().unwrap() = (focus as isize, String::from_utf16_lossy(&title[..len]));
-
-    set_mode(ui, false);
-    play(ui);
-}
-
-/// After the unlock the window stays, without the lock, when something got
-/// through that the human should know about.
-unsafe fn show_review(ui: &Ui) {
-    let anything = INCIDENT.lock().unwrap().as_ref().is_some_and(|i| !i.leaks().is_empty());
-    if !anything {
-        return hide_lock(ui);
-    }
-    SetWindowTextW(
-        ui.detail as HWND,
-        wide("Unlocked. The lime keys reached your programs before the lock fell.").as_ptr(),
-    );
-    set_mode(ui, true);
-}
-
-unsafe fn set_mode(ui: &Ui, review: bool) {
-    IN_REVIEW.store(review, Relaxed);
-    TYPED_SINCE_UNLOCK.store(false, Relaxed);
-    for (hwnd, visible) in [(ui.progress, !review), (ui.human, !review), (ui.undo, review), (ui.close, review)] {
-        ShowWindow(hwnd as HWND, if visible { SW_SHOWNA } else { SW_HIDE });
-    }
-    refresh(ui);
-    SetWindowPos(ui.lock as HWND, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-}
-
-unsafe fn hide_lock(ui: &Ui) {
-    ShowWindow(ui.lock as HWND, SW_HIDE);
-}
-
-unsafe fn set_progress(ui: &Ui, typed: usize) {
-    let text: String = UNLOCK_WORD
-        .iter()
-        .enumerate()
-        .flat_map(|(i, &c)| [if i < typed { c.to_ascii_lowercase() as char } else { '_' }, ' '])
-        .collect();
-    SetWindowTextW(ui.progress as HWND, wide(text.trim_end()).as_ptr());
-}
-
-unsafe fn play(ui: &Ui) {
-    PlaySoundW(ui.wav.as_ptr().cast(), null_mut(), SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
-}
-
-// ------------------------------------------------------- incident: text, undo
 
 /// The name Windows has for a key in the current keyboard language.
 unsafe fn key_name(scancode: u32, extended: bool) -> String {
@@ -457,68 +547,34 @@ unsafe fn combo_name(mods: Mods, vk: u8) -> String {
     name + &if key.is_empty() { format!("key {vk:#04X}") } else { key }
 }
 
-/// Rewrites the summary and the undo button from the latest snapshot.
-unsafe fn refresh(ui: &Ui) {
-    let incident = INCIDENT.lock().unwrap().clone();
-    let (mut typed, mut lines) = (Vec::new(), Vec::new());
-    let mut steps = Vec::new();
-    if let Some(incident) = &incident {
-        for leak in incident.leaks() {
-            let times = if leak.count > 1 { format!(" \u{d7}{}", leak.count) } else { String::new() };
-            let name = combo_name(leak.mods, leak.vk);
-            match leak.note {
-                Some(note) => lines.push(format!("{name}{times} {note}.")),
-                None => typed.push(format!("{name}{times}")),
-            }
-        }
-        steps = incident.undo_plan();
-    }
-    if !typed.is_empty() {
-        lines.insert(0, format!("Typed: {}", typed.join(", ")));
-    }
-    if lines.is_empty() {
-        lines.push("Nothing reached your programs.".into());
-    }
-    lines.truncate(4);
-
-    let mut label = Vec::new();
-    for step in &steps {
-        label.push(match step {
-            UndoStep::Press(mods, vk) => format!("press {}", combo_name(*mods, *vk)),
-            UndoStep::Backspace(n) => format!("remove {n} characters"),
-        });
-    }
-    if !steps.is_empty() {
-        lines.push(format!("Undo types into: {}", TARGET.lock().unwrap().1));
-    }
-    let label = if steps.is_empty() { "Nothing to undo with keys".into() } else { format!("Undo: {}", label.join(", ")) };
-
-    SetWindowTextW(ui.summary as HWND, wide(&lines.join("\n")).as_ptr());
-    SetWindowTextW(ui.undo as HWND, wide(&label).as_ptr());
-    EnableWindow(ui.undo as HWND, i32::from(!steps.is_empty()));
-    InvalidateRect(ui.lock as HWND, null(), 1);
-}
-
-unsafe fn undo(ui: &Ui) {
+/// Takes back what keys can take back, in the window the cat typed into.
+unsafe fn undo() {
     let Some(incident) = INCIDENT.lock().unwrap().clone() else { return };
-    let (target, title) = TARGET.lock().unwrap().clone();
-    if target == 0 || GetForegroundWindow() as isize != target {
-        // Typing Backspace into whatever has the focus now could delete the
-        // wrong thing. This window never takes the focus, so clicking into
-        // the right window and then on Undo works.
-        let text = format!("The focus is no longer in \u{201c}{title}\u{201d}.\nClick into that window, then click Undo again.");
-        SetWindowTextW(ui.summary as HWND, wide(&text).as_ptr());
-        return;
-    }
+    let (target, title) = {
+        let info = LOCK_INFO.lock().unwrap();
+        (info.target, info.title.clone())
+    };
+    let note = |text: String| LOCK_INFO.lock().unwrap().undo_note = text;
 
     let mut steps = incident.undo_plan();
     if TYPED_SINCE_UNLOCK.load(Relaxed) {
+        let before = steps.len();
         steps.retain(|step| !matches!(step, UndoStep::Backspace(_)));
-        if steps.is_empty() {
-            let text = "You have typed since the unlock, so Backspace would delete your text, not the cat's.";
-            SetWindowTextW(ui.summary as HWND, wide(text).as_ptr());
-            return;
+        if steps.len() < before {
+            note("You have typed since the unlock, so Backspace would delete your text, not the cat's. It was left out.".into());
         }
+    }
+    if steps.is_empty() {
+        return;
+    }
+
+    // Undo types into the window the cat typed into, never into whatever
+    // happens to have the focus. catguard is in the foreground right now, so
+    // Windows lets it hand the focus over.
+    SetForegroundWindow(target as HWND);
+    std::thread::sleep(Duration::from_millis(200));
+    if target == 0 || GetForegroundWindow() as isize != target {
+        return note(format!("\u{201c}{title}\u{201d} is gone or does not take the focus, so nothing was typed."));
     }
 
     let mut keys: Vec<(u16, bool)> = Vec::new(); // (virtual key, down)
@@ -548,85 +604,232 @@ unsafe fn undo(ui: &Ui) {
         })
         .collect();
     SendInput(inputs.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32);
-
-    SetWindowTextW(ui.summary as HWND, wide("Done. Check the window behind this one.").as_ptr());
-    EnableWindow(ui.undo as HWND, 0);
+    LOCK_INFO.lock().unwrap().undone = true;
 }
 
-// ------------------------------------------------------------------- timeline
+// ------------------------------------------------------------- native windows
 
 const fn rgb(r: u32, g: u32, b: u32) -> COLORREF {
     r | g << 8 | b << 16
 }
 
-const PANEL: COLORREF = rgb(11, 16, 20);
+const PLATE: COLORREF = rgb(5, 7, 10);
 const LIME: COLORREF = rgb(200, 240, 60);
-const HUMAN: COLORREF = rgb(170, 178, 184);
-const BLOCKED: COLORREF = rgb(84, 92, 98);
-const TEXT: COLORREF = rgb(207, 214, 218);
+const WHITE: COLORREF = rgb(242, 245, 243);
+const MUTED: COLORREF = rgb(147, 160, 167);
 
-/// One row per key, time from left to right, one bar per press. Lime bars
-/// reached the programs while the paw was down, light bars are what was typed
-/// before, dark bars were blocked.
-unsafe fn paint_timeline(ui: &Ui, hdc: HDC) {
-    let px = |n: i32| n * ui.dpi / 96;
-    let top = if IN_REVIEW.load(Relaxed) { 104 } else { 184 };
-    let panel = RECT { left: px(24), top: px(top), right: px(536), bottom: px(354) };
-    let fill = |rect: &RECT, color: COLORREF| {
-        let brush = CreateSolidBrush(color);
-        FillRect(hdc, rect, brush);
-        DeleteObject(brush);
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(Some(0)).collect()
+}
+
+unsafe extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let Some(ui) = UI.get() else {
+        return DefWindowProcW(hwnd, message, wparam, lparam);
     };
-    fill(&panel, PANEL);
-    let Some(incident) = INCIDENT.lock().unwrap().clone() else { return };
-
-    let old_font = SelectObject(hdc, ui.small_font as HGDIOBJ);
-    SetBkMode(hdc, TRANSPARENT as i32);
-    SetTextColor(hdc, TEXT);
-    let text = |x: i32, y: i32, s: &str| {
-        let s: Vec<u16> = s.encode_utf16().collect();
-        TextOutW(hdc, x, y, s.as_ptr(), s.len() as i32);
-    };
-
-    let from = incident.locked_at.saturating_sub(LOOKBACK);
-    let until = incident.taken_at.max(incident.locked_at + 100_000);
-    let (bars_left, bars_right) = (panel.left + px(96), panel.right - px(64));
-    let x_of = |t: u64| bars_left + ((t.clamp(from, until) - from) as i64 * i64::from(bars_right - bars_left) / (until - from) as i64) as i32;
-
-    let mut rows: Vec<u16> = Vec::new();
-    for press in &incident.presses {
-        if !rows.contains(&press.key) {
-            rows.push(press.key);
-        }
-    }
-    let row_height = px(15);
-    let room = ((panel.bottom - panel.top - px(38)) / row_height).max(1) as usize;
-    let rows = &rows[rows.len().saturating_sub(room)..];
-
-    for (i, &key) in rows.iter().enumerate() {
-        let y = panel.top + px(20) + i as i32 * row_height;
-        text(panel.left + px(8), y - px(2), &key_name(u32::from(key & 0xFF), key & EXTENDED != 0));
-        for press in incident.presses.iter().filter(|p| p.key == key) {
-            let end = press.up.unwrap_or(incident.taken_at);
-            let (x1, x2) = (x_of(press.down), x_of(end).max(x_of(press.down) + px(3)));
-            let color = match (press.passed, incident.during_paw(press)) {
-                (false, _) => BLOCKED,
-                (true, true) => LIME,
-                (true, false) => HUMAN,
-            };
-            fill(&RECT { left: x1, top: y + px(2), right: x2, bottom: y + row_height - px(3) }, color);
-            if press.passed || press.up.is_none() {
-                let held = (end - press.down) / 1_000;
-                text(x2 + px(4), y - px(2), &if press.up.is_none() { format!("{held} ms, still down") } else { format!("{held} ms") });
+    match message {
+        WM_GUARD => {
+            match wparam {
+                GUARD_LOCK => on_lock(ui, lparam),
+                GUARD_DETER => play(false),
+                GUARD_PROGRESS => set_progress(ui, lparam as usize),
+                GUARD_UNLOCK => on_unlock(ui),
+                _ => {}
             }
+            if APP_OPEN.load(Relaxed) {
+                notify(UserEvent::Push);
+            }
+            0
         }
+        WM_OPEN => {
+            notify(UserEvent::Open(None));
+            0
+        }
+        // The only control that sends WM_COMMAND is the unlock button.
+        WM_COMMAND if hwnd as isize == ui.lock => {
+            UNLOCK_CLICKED.store(true, Relaxed);
+            on_unlock(ui);
+            0
+        }
+        // The lock window is plate black with white type, and its button is
+        // a lime label. Standard controls ask for their colours here.
+        WM_CTLCOLORSTATIC => {
+            let (hdc, control) = (wparam as HDC, lparam);
+            let (text, back, brush) = match control {
+                c if c == ui.human => (PLATE, LIME, ui.lime_brush),
+                c if c == ui.progress => (LIME, PLATE, ui.dark_brush),
+                c if c == ui.detail => (MUTED, PLATE, ui.dark_brush),
+                _ => (WHITE, PLATE, ui.dark_brush),
+            };
+            SetTextColor(hdc, text);
+            SetBkColor(hdc, back);
+            brush
+        }
+        WM_PAINT if hwnd as isize == ui.lock => {
+            let mut paint: PAINTSTRUCT = zeroed();
+            let hdc = BeginPaint(hwnd, &mut paint);
+            let mut client: RECT = zeroed();
+            GetClientRect(hwnd, &mut client);
+            FrameRect(hdc, &client, ui.lime_brush as HBRUSH);
+            let size = 72 * ui.dpi / 96;
+            DrawIconEx(hdc, (client.right - size) / 2, 22 * ui.dpi / 96, ui.icon as HICON, size, size, 0, null_mut(), DI_NORMAL);
+            EndPaint(hwnd, &paint);
+            0
+        }
+        WM_CLOSE if hwnd as isize == ui.lock => 0,
+        WM_TRAY => {
+            match lparam as u32 {
+                WM_LBUTTONUP => notify(UserEvent::Open(None)),
+                WM_RBUTTONUP => tray_menu(ui),
+                _ => {}
+            }
+            0
+        }
+        _ if message == ui.taskbar_created => {
+            // Explorer restarted and lost every tray icon.
+            tray(NIM_ADD);
+            0
+        }
+        _ => DefWindowProcW(hwnd, message, wparam, lparam),
     }
+}
 
-    let lock_x = x_of(incident.locked_at);
-    fill(&RECT { left: lock_x, top: panel.top + px(16), right: lock_x + px(1).max(1), bottom: panel.bottom - px(18) }, TEXT);
-    text(lock_x - px(16), panel.top + px(1), "locked");
-    text(panel.left + px(8), panel.bottom - px(17), "lime: reached your programs    light: typed before    dark: blocked");
-    SelectObject(hdc, old_font);
+unsafe fn create_native_windows() -> Ui {
+    let instance = GetModuleHandleW(null());
+    let dark_brush = CreateSolidBrush(PLATE);
+    for name in [w!("catguard-main"), w!("catguard-lock")] {
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(wnd_proc),
+            hInstance: instance,
+            hCursor: LoadCursorW(null_mut(), IDC_ARROW),
+            hbrBackground: dark_brush,
+            lpszClassName: name,
+            ..zeroed()
+        };
+        RegisterClassW(&class);
+    }
+    // A hidden top-level window, not a message-only one: only top-level
+    // windows hear the TaskbarCreated broadcast, and FindWindowW finds it.
+    let main = CreateWindowExW(0, w!("catguard-main"), w!("catguard"), WS_OVERLAPPED, 0, 0, 0, 0, null_mut(), null_mut(), instance, null());
+
+    let dpi = GetDpiForSystem() as i32;
+    let px = |n: i32| n * dpi / 96;
+    let (width, height) = (px(540), px(356));
+    // WS_EX_NOACTIVATE keeps the focus where the human left it. The hook sees
+    // the unlock word anyway, so this window never needs the keyboard.
+    let lock = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        w!("catguard-lock"), w!("catguard"), WS_POPUP,
+        (GetSystemMetrics(SM_CXSCREEN) - width) / 2,
+        (GetSystemMetrics(SM_CYSCREEN) - height) / 2,
+        width, height, null_mut(), null_mut(), instance, null(),
+    );
+    // Rounded corners on Windows 11 (DWMWA_WINDOW_CORNER_PREFERENCE = 33,
+    // DWMWCP_ROUND = 2). Windows 10 ignores it.
+    let round: u32 = 2;
+    DwmSetWindowAttribute(lock, 33, (&round as *const u32).cast(), 4);
+
+    let font = |points: i32, weight: i32| {
+        CreateFontW(
+            -(points * dpi / 72), 0, 0, 0, weight, 0, 0, 0,
+            DEFAULT_CHARSET as u32, 0, 0, CLEARTYPE_QUALITY as u32, 0, w!("Segoe UI"),
+        )
+    };
+    // SS_CENTER = 1, SS_NOTIFY = 0x100 (clicks arrive as WM_COMMAND),
+    // SS_CENTERIMAGE = 0x200 (centres one line of text vertically).
+    let child = |text: *const u16, style: u32, id: usize, rect: [i32; 4], font: HFONT| {
+        let [x, y, w, h] = rect.map(px);
+        let hwnd = CreateWindowExW(
+            0, w!("STATIC"), text, WS_CHILD | WS_VISIBLE | 1 | style,
+            x, y, w, h, lock, id as HMENU, instance, null(),
+        );
+        SendMessageW(hwnd, WM_SETFONT, font as WPARAM, 1);
+        hwnd as isize
+    };
+    child(w!("Cat-like typing detected"), 0, 0, [20, 104, 500, 40], font(20, FW_SEMIBOLD as i32));
+    Ui {
+        main: main as isize,
+        lock: lock as isize,
+        detail: child(null(), 0, 0, [20, 150, 500, 52], font(11, FW_NORMAL as i32)),
+        progress: child(null(), 0, 0, [20, 208, 500, 44], font(22, FW_SEMIBOLD as i32)),
+        human: child(w!("I am human"), 0x100 | 0x200, BTN_HUMAN, [170, 272, 200, 48], font(12, FW_SEMIBOLD as i32)),
+        dark_brush: dark_brush as isize,
+        lime_brush: CreateSolidBrush(LIME) as isize,
+        icon: LoadImageW(instance, ICON_APP as *const u16, IMAGE_ICON, px(72), px(72), 0) as isize,
+        dpi,
+        wav: Box::leak(harmonica_wav().into_boxed_slice()),
+        taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
+    }
+}
+
+unsafe fn on_lock(ui: &Ui, rule: isize) {
+    const RULES: [(Rule, &str); 4] = [
+        (Rule::Slam, "three keys at once"),
+        (Rule::Chord, "four keys in one spot"),
+        (Rule::Pair, "two neighbouring keys held"),
+        (Rule::Sit, "keys held for seconds"),
+    ];
+    let reason = RULES.iter().find(|(r, _)| *r as isize == rule).map_or("", |(_, text)| text);
+    let word = settings().word.clone();
+    let text = format!("The keyboard is locked: {reason}.\nType  {word}  to unlock it, or click the button.");
+    SetWindowTextW(ui.detail as HWND, wide(&text).as_ptr());
+    set_progress(ui, 0);
+
+    let focus = GetForegroundWindow();
+    let mut title = [0u16; 128];
+    let len = GetWindowTextW(focus, title.as_mut_ptr(), title.len() as i32).max(0) as usize;
+    let mut now: SYSTEMTIME = zeroed();
+    GetLocalTime(&mut now);
+    *LOCK_INFO.lock().unwrap() = LockInfo {
+        target: focus as isize,
+        title: String::from_utf16_lossy(&title[..len]),
+        when: format!("At {:02}:{:02}", now.wHour, now.wMinute),
+        undone: false,
+        undo_note: String::new(),
+    };
+
+    LOCKED.store(true, Relaxed);
+    TYPED_SINCE_UNLOCK.store(false, Relaxed);
+    change_settings(|s| s.locks += 1);
+    SetWindowPos(ui.lock as HWND, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    play(false);
+}
+
+/// Hides the lock. If keys got through, the app opens on the page that shows
+/// them, because that is the moment the human wants to know.
+unsafe fn on_unlock(ui: &Ui) {
+    LOCKED.store(false, Relaxed);
+    TYPED_SINCE_UNLOCK.store(false, Relaxed);
+    ShowWindow(ui.lock as HWND, SW_HIDE);
+    let leaked = INCIDENT.lock().unwrap().as_ref().is_some_and(|i| !i.leaks().is_empty());
+    if leaked {
+        notify(UserEvent::Open(Some("incident")));
+    }
+}
+
+unsafe fn set_progress(ui: &Ui, typed: usize) {
+    let text: String = settings()
+        .word
+        .chars()
+        .enumerate()
+        .flat_map(|(i, c)| [if i < typed { c } else { '_' }, ' '])
+        .collect();
+    SetWindowTextW(ui.progress as HWND, wide(text.trim_end()).as_ptr());
+}
+
+unsafe fn play(even_if_muted: bool) {
+    let Some(ui) = UI.get() else { return };
+    if even_if_muted || settings().sound {
+        PlaySoundW(ui.wav.as_ptr().cast(), null_mut(), SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+    }
+}
+
+unsafe fn set_paused(paused: bool) {
+    let Some(ui) = UI.get() else { return };
+    PAUSED.store(paused, Relaxed);
+    LOCKED.store(false, Relaxed);
+    ShowWindow(ui.lock as HWND, SW_HIDE);
+    tray(NIM_MODIFY);
+    notify(UserEvent::Push);
 }
 
 // ----------------------------------------------------------------------- tray
@@ -647,21 +850,17 @@ unsafe fn tray(command: NOTIFY_ICON_MESSAGE) {
         GetSystemMetrics(SM_CXSMICON),
         GetSystemMetrics(SM_CYSMICON),
         LR_SHARED,
-    );
-    let tip = wide(if paused { "catguard (paused)" } else { "catguard is watching the keyboard" });
+    ) as HICON;
+    let tip = wide(if paused { "catguard is asleep" } else { "catguard is watching the keyboard" });
     data.szTip[..tip.len()].copy_from_slice(&tip);
     Shell_NotifyIconW(command, &data);
 }
 
 unsafe fn tray_menu(ui: &Ui) {
     let paused = PAUSED.load(Relaxed);
-    let autostart = autostart_enabled();
-    let has_incident = INCIDENT.lock().unwrap().is_some();
-
     let menu = CreatePopupMenu();
-    AppendMenuW(menu, MF_STRING | if has_incident { 0 } else { MF_GRAYED }, ID_INCIDENT, w!("Last incident"));
-    AppendMenuW(menu, MF_STRING, ID_PAUSE, if paused { w!("Resume") } else { w!("Pause") });
-    AppendMenuW(menu, MF_STRING | if autostart { MF_CHECKED } else { 0 }, ID_AUTOSTART, w!("Start with Windows"));
+    AppendMenuW(menu, MF_STRING, ID_OPEN, w!("Open catguard"));
+    AppendMenuW(menu, MF_STRING, ID_PAUSE, if paused { w!("Wake catguard") } else { w!("Pause") });
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
     AppendMenuW(menu, MF_STRING, ID_EXIT, w!("Exit"));
 
@@ -673,18 +872,11 @@ unsafe fn tray_menu(ui: &Ui) {
     DestroyMenu(menu);
 
     match choice as usize {
-        ID_INCIDENT => {
-            SetWindowTextW(ui.detail as HWND, wide("The last time the keyboard was locked.").as_ptr());
-            set_mode(ui, true);
-        }
-        ID_PAUSE => {
-            PAUSED.store(!paused, Relaxed);
-            hide_lock(ui);
-            tray(NIM_MODIFY);
-        }
-        ID_AUTOSTART => set_autostart(!autostart),
+        ID_OPEN => notify(UserEvent::Open(None)),
+        ID_PAUSE => set_paused(!paused),
         ID_EXIT => {
-            DestroyWindow(ui.main as HWND);
+            tray(NIM_DELETE);
+            notify(UserEvent::Quit);
         }
         _ => {}
     }
@@ -706,10 +898,11 @@ unsafe fn set_autostart(enable: bool) {
         return;
     }
     let Ok(exe) = std::env::current_exe() else { return };
+    // --background: start in the tray without opening the window.
     let command: Vec<u16> = Some(u16::from(b'"'))
         .into_iter()
         .chain(exe.as_os_str().encode_wide())
-        .chain([u16::from(b'"'), 0])
+        .chain("\" --background\0".encode_utf16())
         .collect();
     RegSetKeyValueW(
         HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE, REG_SZ,
