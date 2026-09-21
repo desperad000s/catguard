@@ -215,6 +215,8 @@ struct Ui {
     lock: isize,
     progress: isize,
     human: isize,
+    /// Shown in the button's place when touchpad and mouse are locked too.
+    pointer_hint: isize,
     detail: isize,
     dark_brush: isize,
     lime_brush: isize,
@@ -877,7 +879,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lpa
             let (hdc, control) = (wparam as HDC, lparam);
             let (text, back, brush) = match control {
                 c if c == ui.human => (PLATE, LIME, ui.lime_brush),
-                c if c == ui.progress => (LIME, PLATE, ui.dark_brush),
+                c if c == ui.progress || c == ui.pointer_hint => (LIME, PLATE, ui.dark_brush),
                 c if c == ui.detail => (MUTED, PLATE, ui.dark_brush),
                 _ => (WHITE, PLATE, ui.dark_brush),
             };
@@ -973,6 +975,7 @@ unsafe fn create_native_windows() -> Ui {
         detail: child(null(), 0, 0, [20, 150, 500, 52], font(11, FW_NORMAL as i32)),
         progress: child(null(), 0, 0, [20, 208, 500, 44], font(22, FW_SEMIBOLD as i32)),
         human: child(w!("I am human"), 0x100 | 0x200, BTN_HUMAN, [170, 272, 200, 48], font(12, FW_SEMIBOLD as i32)),
+        pointer_hint: child(null(), 0, 0, [20, 266, 500, 60], font(12, FW_SEMIBOLD as i32)),
         dark_brush: dark_brush as isize,
         lime_brush: CreateSolidBrush(LIME) as isize,
         icon: LoadImageW(instance, ICON_APP as *const u16, IMAGE_ICON, px(72), px(72), 0) as isize,
@@ -994,10 +997,16 @@ unsafe fn on_lock(ui: &Ui, rule: isize) {
         let settings = settings();
         (settings.word.clone(), settings.lock_pointer)
     };
-    let how = if pointer_locked { "to unlock. Touchpad and mouse are locked too." } else { "to unlock it, or click the button." };
+    let how = if pointer_locked { "on the keyboard to unlock it." } else { "to unlock it, or click the button." };
     let text = format!("The keyboard is locked: {reason}.\nType  {word}  {how}");
     SetWindowTextW(ui.detail as HWND, wide(&text).as_ptr());
+    // With the pointer frozen nobody can click, so the button makes way for
+    // a line that says so. Typing still works: catguard reads every key
+    // before it swallows it.
+    let hint = format!("Touchpad and mouse are locked too.\nType  {word}  on the keyboard. No click needed.");
+    SetWindowTextW(ui.pointer_hint as HWND, wide(&hint).as_ptr());
     ShowWindow(ui.human as HWND, if pointer_locked { SW_HIDE } else { SW_SHOWNA });
+    ShowWindow(ui.pointer_hint as HWND, if pointer_locked { SW_SHOWNA } else { SW_HIDE });
     set_progress(ui, 0);
 
     let focus = GetForegroundWindow();
