@@ -1,166 +1,87 @@
-"""Cuts the app icon and the two tray icons out of assets/src/icon-sheet.png.
+"""Renders every icon from one drawing, so that the exe, the tray, the lock
+window and the app all show the same cat.
 
 Run from the repo root: python3 assets/make_icons.py [contact-sheet.png]
-The large app icon frames are cut from the sheet (variation 08). The tray
-icons follow the sheet's round pair but are redrawn, because 16 pixels cannot
-carry the original detail.
-"""
-from PIL import Image, ImageChops, ImageDraw, ImageFilter
+Needs rsvg-convert and Pillow.
 
+The mark is the cat from variation 08 of assets/src/icon-sheet.png, redrawn
+as vectors with the same head the app draws in ui/index.html. The sheet's
+bitmap does not survive 16 pixels, and cutting different sizes from different
+places is how the exe ended up with three different logos.
+"""
+import io
+import subprocess
 import sys
 
+from PIL import Image
+
 CONTACT_SHEET = sys.argv[1] if len(sys.argv) > 1 else "target/icons-contact-sheet.png"
-SHEET = Image.open("assets/src/icon-sheet.png").convert("RGB")
+LIME, WHITE, GREY, PLATE = "#c8f03c", "#f2f5f3", "#8f9aa1", "#05070a"
 
-# Boxes on the sheet: (left, top, right, bottom).
-APP_TILE = (640, 416, 900, 668)    # 08, the cat looking over the keyboard
-APP_ART = (662, 452, 880, 600)     # the same tile without the wordmark
-
-
-def keyed(box):
-    """Artwork on transparency: alpha is the brightness above the background."""
-    art = SHEET.crop(box)
-    r, g, b = art.split()
-    brightness = ImageChops.lighter(ImageChops.lighter(r, g), b)
-    alpha = brightness.point(lambda v: 0 if v < 40 else min(255, int((v - 40) * 255 / 150)))
-    # Full-strength colour under the alpha, otherwise edges turn grey.
-    solid = art.point(lambda v: min(255, int(v * 1.25)))
-    solid.putalpha(alpha)
-    return solid.crop(alpha.getbbox())
+# The head from ui/index.html: 236 wide, 142 high, its chin on y = 0.
+HEAD = """
+  <path fill="{body}" d="M-118 0C-118-62-96-100-92-142L-46-104C-30-110 30-110 46-104L92-142C96-100 118-62 118 0Z"/>
+  <path fill="{plate}" d="M-84 0C-84-40-52-66 0-66 52-66 84-40 84 0Z"/>
+  <ellipse fill="{eye}" cx="-36" cy="-26" rx="20" ry="15" transform="rotate(12 -36 -26)"/>
+  <ellipse fill="{eye}" cx="36" cy="-26" rx="20" ry="15" transform="rotate(-12 36 -26)"/>
+  {pupils}
+"""
+PUPILS = f'<ellipse fill="{PLATE}" cx="-36" cy="-26" rx="5.5" ry="12"/><ellipse fill="{PLATE}" cx="36" cy="-26" rx="5.5" ry="12"/>'
 
 
-def on_square(art, size, pad, plate):
-    """Centres the art on a square canvas, optionally on a dark rounded plate."""
-    big = size * 4
-    canvas = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-    if plate:
-        ImageDraw.Draw(canvas).rounded_rectangle(
-            (0, 0, big - 1, big - 1), radius=big * 22 // 100, fill=(5, 7, 9, 255))
-    room = big - 2 * pad * 4
-    scale = min(room / art.width, room / art.height)
-    fitted = art.resize((max(1, round(art.width * scale)), max(1, round(art.height * scale))), Image.LANCZOS)
-    canvas.alpha_composite(fitted, ((big - fitted.width) // 2, (big - fitted.height) // 2))
-    small = canvas.resize((size, size), Image.LANCZOS)
-    return small.filter(ImageFilter.UnsharpMask(radius=0.6, percent=80)) if size <= 32 else small
+def app_svg():
+    """The cat looks over the keyboard, on the black plate of the logo."""
+    keys = "".join(
+        f'<rect x="{46 + col * 28 + row * 7}" y="{166 + row * 24}" width="20" height="16" rx="4" fill="{WHITE}"/>'
+        for row in range(2) for col in range(6 - row))
+    head = HEAD.format(body=WHITE, plate=PLATE, eye=LIME, pupils=PUPILS)
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <rect width="256" height="256" rx="56" fill="{PLATE}"/>
+  <g transform="translate(128 150) scale(0.74)">{head}</g>
+  <rect x="30" y="148" width="196" height="76" rx="16" fill="{PLATE}" stroke="{WHITE}" stroke-width="7"/>
+  {keys}
+  <g stroke="{LIME}" stroke-width="8" stroke-linecap="round"><path d="M212 62l14-20M224 90l22-10M226 120l22 2"/></g>
+</svg>"""
 
 
-def tile(size):
-    big = SHEET.crop(APP_TILE).convert("RGBA")
-    mask = Image.new("L", big.size, 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, big.width - 1, big.height - 1), radius=big.width * 22 // 100, fill=255)
-    big.putalpha(mask)
-    return big.resize((size, size), Image.LANCZOS)
+def tray_svg(watching):
+    """The same head in a ring. The ring carries the state."""
+    ring, body = (LIME, WHITE) if watching else (GREY, GREY)
+    head = HEAD.format(body=body, plate=PLATE, eye=LIME if watching else GREY, pupils=PUPILS if watching else "")
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <circle cx="128" cy="128" r="114" fill="{PLATE}" stroke="{ring}" stroke-width="24"/>
+  <g transform="translate(128 184) scale(0.72)">{head}</g>
+</svg>"""
 
 
-def save_ico(path, frames):
-    frames = sorted(frames, key=lambda f: -f.width)
-    frames[0].save(path, format="ICO", append_images=frames[1:], sizes=[(f.width, f.width) for f in frames])
+def render(svg, size):
+    png = subprocess.run(["rsvg-convert", "-w", str(size), "-h", str(size)], input=svg.encode(), capture_output=True, check=True).stdout
+    return Image.open(io.BytesIO(png)).convert("RGBA")
 
 
-LIME = (200, 240, 60, 255)
-WHITE = (255, 255, 255, 255)
-GREY = (150, 158, 164, 255)
-DARK = (8, 11, 14, 255)
+def save_ico(path, svg, sizes):
+    frames = [render(svg, s) for s in sizes]
+    frames[0].save(path, format="ICO", append_images=frames[1:], sizes=[(s, s) for s in sizes])
 
 
-def drawn_tray(size, watching, halo=True):
-    """The cat head behind the keyboard, redrawn for small sizes.
+save_ico("assets/catguard.ico", app_svg(), (256, 128, 64, 48, 32, 24, 20, 16))
+save_ico("assets/tray-active.ico", tray_svg(True), (48, 32, 24, 20, 16))
+save_ico("assets/tray-paused.ico", tray_svg(False), (48, 32, 24, 20, 16))
+render(app_svg(), 256).save("assets/logo.png")  # for the README
+open("assets/src/icon.svg", "w").write(app_svg())
 
-    The sheet artwork has more detail than 16 pixels can carry, so the tray
-    icon is drawn here on a 16-unit grid: head, dark face, two eyes, the
-    keyboard edge, and sparks while catguard is watching. A dark halo keeps
-    it visible on a light taskbar.
-    """
-    ss = 16
-    u = size * ss / 16
-    img = Image.new("RGBA", (size * ss, size * ss), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    P = lambda *pts: [(x * u, y * u) for x, y in pts]
-    body = WHITE if watching else GREY
-
-    d.polygon(P((1.7, 9.0), (2.3, 1.6), (5.6, 4.9)), fill=body)      # left ear
-    d.polygon(P((12.3, 9.0), (11.7, 1.6), (8.4, 4.9)), fill=body)    # right ear
-    d.ellipse(P((1.6, 3.6), (12.4, 14.4)), fill=body)                # head
-    d.ellipse(P((3.2, 6.4), (10.8, 12.6)), fill=DARK)                # face
-    eye = LIME if watching else GREY
-    d.ellipse(P((4.2, 7.6), (6.4, 9.4)), fill=eye)
-    d.ellipse(P((7.6, 7.6), (9.8, 9.4)), fill=eye)
-    d.rectangle(P((0, 10.6), (16, 16)), fill=(0, 0, 0, 0))           # cut the head at the keyboard
-    d.rounded_rectangle(P((0.6, 10.8), (14.2, 12.6)), radius=0.6 * u, fill=body)
-    for x in (1.6, 4.2, 6.8, 9.4):                                   # a row of keys
-        d.rounded_rectangle(P((x, 13.6), (x + 2.0, 15.0)), radius=0.3 * u, fill=body)
-    d.rounded_rectangle(P((12.0, 13.6), (13.2, 15.0)), radius=0.3 * u, fill=body)
-    if watching:
-        for a, b in (((13.0, 4.6), (14.6, 2.2)), ((13.8, 6.4), (15.7, 5.0)), ((14.2, 8.2), (15.8, 8.0))):
-            d.line(P(a, b), fill=LIME, width=max(1, round(0.95 * u)))
-
-    if halo:
-        alpha = img.getchannel("A")
-        spread = alpha.filter(ImageFilter.MaxFilter(2 * round(0.55 * u) + 1))
-        under = Image.new("RGBA", img.size, DARK)
-        under.putalpha(spread.point(lambda v: v * 200 // 255))
-        under.alpha_composite(img)
-        img = under
-    return img.resize((size, size), Image.LANCZOS)
-
-
-def drawn_ring(size, watching):
-    """The round tray icon: a cat head in a ring. The ring carries the state,
-    lime while catguard watches and grey while it is paused, because a ring
-    is the one thing that still reads at 16 pixels."""
-    ss = 16
-    u = size * ss / 16
-    img = Image.new("RGBA", (size * ss, size * ss), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    P = lambda *pts: [(x * u, y * u) for x, y in pts]
-    ring = LIME if watching else GREY
-    body = WHITE if watching else GREY
-
-    d.ellipse(P((0.4, 0.4), (15.6, 15.6)), fill=DARK, outline=ring, width=max(1, round(1.5 * u)))
-    d.polygon(P((3.9, 9.0), (4.3, 3.6), (7.0, 5.9)), fill=body)      # left ear
-    d.polygon(P((12.1, 9.0), (11.7, 3.6), (9.0, 5.9)), fill=body)    # right ear
-    d.ellipse(P((3.9, 5.2), (12.1, 12.4)), fill=body)                # head
-    eye = LIME if watching else DARK
-    if watching:
-        d.ellipse(P((4.9, 7.4), (11.1, 11.4)), fill=DARK)            # face
-    d.ellipse(P((5.6, 8.3), (7.5, 10.1)), fill=eye)
-    d.ellipse(P((8.5, 8.3), (10.4, 10.1)), fill=eye)
-    return img.resize((size, size), Image.LANCZOS)
-
-
-def drawn_app(size):
-    plate = on_square(Image.new("RGBA", (4, 4), (0, 0, 0, 0)), size, 0, plate=True)
-    inner = drawn_tray(size - 2 * max(1, size // 8), watching=True, halo=False)
-    plate.alpha_composite(inner, ((size - inner.width) // 2, (size - inner.height) // 2))
-    return plate
-
-
-art = keyed(APP_ART)
-
-# Optical sizes: the wordmark is only legible from 128 px up. Below that the
-# icon is the cat over the keyboard alone, redrawn at taskbar size.
-save_ico("assets/catguard.ico",
-         [tile(256), tile(128)]
-         + [on_square(art, s, s // 12, plate=True) for s in (64, 48)]
-         + [drawn_app(s) for s in (32, 24, 20, 16)])
-tile(256).save("assets/logo.png")  # for the README
-TRAY_SIZES = (48, 32, 24, 20, 16)
-save_ico("assets/tray-active.ico", [drawn_ring(s, True) for s in TRAY_SIZES])
-save_ico("assets/tray-paused.ico", [drawn_ring(s, False) for s in TRAY_SIZES])
-
-# Contact sheet for a human to look at: every small frame at 1x and at 6x,
-# on a dark and on a light taskbar colour.
-sheet = Image.new("RGBA", (980, 470), (32, 32, 32, 255))
-ImageDraw.Draw(sheet).rectangle((0, 300, 980, 470), fill=(238, 238, 238, 255))
-x = 10
-for frame in (tile(256), on_square(art, 64, 5, True), on_square(art, 48, 4, True)):
-    sheet.alpha_composite(frame.resize((frame.width // 2, frame.height // 2)) if frame.width == 256 else frame, (x, 10))
-    x += (128 if frame.width == 256 else frame.width) + 12
+# Contact sheet for a human to look at: small frames at 1x and magnified, on
+# a dark and on a light taskbar colour.
+sheet = Image.new("RGBA", (1000, 470), (32, 32, 32, 255))
+sheet.paste((238, 238, 238, 255), (0, 300, 1000, 470))
+sheet.alpha_composite(render(app_svg(), 128), (10, 10))
+for x, size in ((150, 64), (226, 48), (286, 32), (330, 16)):
+    sheet.alpha_composite(render(app_svg(), size), (x, 10))
 for y in (150, 320):
     x = 10
-    for frame in (drawn_ring(16, True), drawn_ring(16, False), drawn_ring(24, True), drawn_ring(32, True),
-                  drawn_ring(32, False), drawn_app(16), drawn_app(32)):
+    for svg, size in ((tray_svg(True), 16), (tray_svg(False), 16), (tray_svg(True), 32), (tray_svg(False), 32), (app_svg(), 16), (app_svg(), 32)):
+        frame = render(svg, size)
         sheet.alpha_composite(frame, (x, y))
-        sheet.alpha_composite(frame.resize((96, 96), Image.NEAREST), (x + 36, y))
-        x += 138
+        sheet.alpha_composite(frame.resize((112, 112), Image.NEAREST), (x + 40, y))
+        x += 162
 sheet.save(CONTACT_SHEET)

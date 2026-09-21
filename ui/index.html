@@ -104,6 +104,7 @@ body[data-mode="locked"] .deck { stroke: var(--lime); }
 
 .below { display: grid; grid-template-columns: 1.3fr 1fr; gap: var(--gap); margin-top: var(--gap); align-items: start; }
 .try { border-left: 3px solid var(--accent); padding-left: 1.1rem; }
+.try button { margin-top: 1rem; }
 .last { background: var(--panel); border-radius: 1.1rem; padding: 1.2rem 1.4rem; }
 .last button { background: none; border: 0; padding: 0; color: var(--accent); font-weight: 600; text-decoration: underline; text-underline-offset: .2em; margin-top: .5rem; }
 
@@ -135,6 +136,8 @@ kbd { font: 600 1.1em var(--display); letter-spacing: .04em; background: var(--k
 /* ---- settings */
 .settings { display: grid; gap: 0; margin-top: var(--gap); max-width: 70rem; }
 .setting { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1rem 2rem; align-items: center; padding: 1.3rem 0; border-top: 1px solid var(--line); }
+.setting.stacked { grid-template-columns: 1fr; }
+.setting.stacked .pair { justify-content: flex-start; }
 .setting h2 { font-size: clamp(1.3rem, 1vw + .9rem, 1.7rem); }
 .setting p { color: var(--muted); margin-top: .2rem; }
 .choice { display: flex; background: var(--panel); border-radius: 999px; padding: .25rem; border: 1px solid var(--line); }
@@ -144,7 +147,7 @@ kbd { font: 600 1.1em var(--display); letter-spacing: .04em; background: var(--k
 .switch::after { content: ""; position: absolute; top: .2rem; left: .2rem; width: 1.4rem; height: 1.4rem; border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s; }
 .switch[aria-checked="true"] { background: var(--lime); border-color: var(--lime); }
 .switch[aria-checked="true"]::after { transform: translateX(1.6rem); background: var(--on-lime); }
-.pair { display: flex; gap: .7rem; align-items: center; }
+.pair { display: flex; gap: .9rem; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 input[type="text"] { background: var(--panel); border: 1.5px solid var(--line); border-radius: .7rem; padding: .55em .9em; width: 11rem; font: 600 1.2em var(--display); letter-spacing: .08em; user-select: text; }
 
 @media (max-width: 860px) {
@@ -189,7 +192,8 @@ input[type="text"] { background: var(--panel); border: 1.5px solid var(--line); 
     <div class="below">
       <div class="try">
         <h2>Try it</h2>
-        <p class="muted">Put your flat hand on three or four neighbouring keys. The keyboard locks, the harmonica plays, and you type <kbd id="word-hint">human</kbd> to get it back. Keys you press light up here, so you can see what catguard sees.</p>
+        <p class="muted">Put your flat hand on three or four neighbouring keys. The keyboard locks, the sound plays, and you type <kbd id="word-hint">human</kbd> to get it back. Keys you press light up here, so you can see what catguard sees.</p>
+        <button class="quiet" id="lock-now">Lock the keyboard now</button>
       </div>
       <div class="last" id="last"></div>
     </div>
@@ -209,9 +213,14 @@ input[type="text"] { background: var(--panel); border: 1.5px solid var(--line); 
           <button data-value="relaxed">Relaxed</button><button data-value="normal">Normal</button><button data-value="kitten">Kitten</button>
         </div>
       </div>
-      <div class="setting">
-        <div><h2>Harmonica</h2><p>Cats dislike it. It plays when the keyboard locks and again on every further pawstep.</p></div>
-        <div class="pair"><button class="quiet" id="test-sound">Play it</button><button class="switch" role="switch" data-setting="sound" aria-label="Harmonica"></button></div>
+      <div class="setting stacked">
+        <div><h2>Sound</h2><p>Plays when the keyboard locks and again on every further pawstep. No sound is proven for every cat, so pick the one yours dislikes. <span id="sound-text"></span></p></div>
+        <div class="pair">
+          <div class="choice" data-setting="sound_kind">
+            <button data-value="harmonica">Harmonica</button><button data-value="hiss">Hiss</button><button data-value="spray">Spray</button><button data-value="whistle">High tone</button>
+          </div>
+          <button class="switch" role="switch" data-setting="sound" aria-label="Sound"></button>
+        </div>
       </div>
       <div class="setting">
         <div><h2>Unlock word</h2><p>Typed blind while the keyboard is locked. Three to twelve letters, nothing a cat would walk.</p></div>
@@ -315,7 +324,13 @@ const SENSITIVITY = {
   normal: "A paw, two neighbouring keys held down, or a cat lying on the keys.",
   kitten: "Small paws and light steps. Reacts sooner, and a clumsy hand can set it off.",
 };
-const RULES = { slam: "three keys at once", chord: "four keys in one spot", pair: "two neighbouring keys held", sit: "keys held for seconds" };
+const SOUNDS = {
+  harmonica: "The harmonica is what PawSense has played since 1999.",
+  hiss: "The hiss is a cat's own warning.",
+  spray: "The spray is two bursts like a can of compressed air.",
+  whistle: "The high tone sits at 15 to 17 kHz. Most adults barely hear it, cats do. Small speakers play it quietly.",
+};
+const RULES = { slam: "three keys at once", chord: "four keys in one spot", pair: "two neighbouring keys held", sit: "keys held for seconds", manual: "you locked it yourself" };
 let names = null, state = null;
 
 function render(s) {
@@ -350,6 +365,7 @@ function render(s) {
   renderIncident(s.incident);
 
   $("#sens-text").textContent = SENSITIVITY[s.settings.sensitivity];
+  $("#sound-text").textContent = SOUNDS[s.settings.sound_kind];
   document.querySelectorAll(".choice").forEach((group) => group.querySelectorAll("button").forEach((b) =>
     b.setAttribute("aria-pressed", String(s.settings[group.dataset.setting] === b.dataset.value))));
   document.querySelectorAll(".switch").forEach((sw) => sw.setAttribute("aria-checked", String(!!s.settings[sw.dataset.setting])));
@@ -426,8 +442,15 @@ function renderIncident(incident) {
 
 // ------------------------------------------------------------------ controls
 $("#pause").onclick = () => send({ cmd: "pause", value: !state.paused });
-$("#test-sound").onclick = () => send({ cmd: "test_sound" });
-document.querySelectorAll(".choice button").forEach((b) => b.onclick = () => send({ cmd: "set", key: b.parentElement.dataset.setting, value: b.dataset.value }));
+$("#lock-now").onclick = () => send({ cmd: "lock_now" });
+document.querySelectorAll(".choice button").forEach((b) => b.onclick = () => {
+  send({ cmd: "set", key: b.parentElement.dataset.setting, value: b.dataset.value });
+  // Choosing a sound plays it, so nobody has to guess what "spray" means.
+  if (b.parentElement.dataset.setting === "sound_kind") send({ cmd: "test_sound", value: b.dataset.value });
+});
+// A flat hand on the keyboard also lands on Space and Enter. Without this it
+// would press whatever button has the focus, Pause for example.
+document.addEventListener("keydown", (e) => { if (e.target.tagName !== "INPUT" && e.key !== "Tab") e.preventDefault(); });
 document.querySelectorAll(".switch").forEach((sw) => sw.onclick = () => send({ cmd: "set", key: sw.dataset.setting, value: sw.getAttribute("aria-checked") !== "true" }));
 const saveWord = () => { const w = $("#word").value.trim().toLowerCase(); if (/^[a-z]{3,12}$/.test(w)) send({ cmd: "set", key: "word", value: w }); else $("#word").value = state.settings.word; };
 $("#save-word").onclick = saveWord;
@@ -448,9 +471,9 @@ else {
   const q = new URLSearchParams(location.search), t0 = 1_000_000;
   const press = (name, down, up, kind, repeats = 0) => ({ name, down: t0 + down * 1000, up: up == null ? null : t0 + up * 1000, kind, repeats });
   render({
-    version: "0.2.0", paused: q.get("mode") === "paused", locked: q.get("mode") === "locked", key_names: null,
+    version: "0.3.0", paused: q.get("mode") === "paused", locked: q.get("mode") === "locked", key_names: null,
     stats: { locks: 12 },
-    settings: { sensitivity: "normal", sound: true, word: "human", autostart: true, theme: q.get("theme") || "dark" },
+    settings: { sensitivity: "normal", sound: true, sound_kind: "hiss", word: "human", autostart: true, theme: q.get("theme") || "dark" },
     incident: q.has("empty") ? null : {
       when: "Today 14:32", rule: "slam", target: "Quarterly report.docx - Word", from: t0, until: t0 + 3_400_000, locked_at: t0 + 3_006_000,
       presses: [press("H", 300, 390, "human"), press("I", 520, 610, "human"), press("Caps Lock", 2100, 2260, "cat"), press("W", 3000, 3330, "cat"), press("E", 3003, 3340, "cat"), press("D", 3006, 3345, "blocked"), press("X", 3200, null, "blocked")],

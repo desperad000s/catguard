@@ -27,12 +27,12 @@ use catguard::guard::{Action, Guard};
 use catguard::history::{Incident, Mods, UndoStep, LOOKBACK};
 use catguard::layout::{is_printable, EXTENDED};
 use catguard::settings::Settings;
-use catguard::sound::harmonica_wav;
+use catguard::sound::Sound;
 
 use serde_json::{json, Value};
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
+use tao::event_loop::{ControlFlow, DeviceEventFilter, EventLoopBuilder, EventLoopProxy, EventLoopWindowTarget};
 use tao::platform::windows::{IconExtWindows, WindowExtWindows};
 use tao::window::{Icon, Theme, Window, WindowBuilder};
 use wry::http::{header::CONTENT_TYPE, Response};
@@ -47,7 +47,7 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Registry::*;
 use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 use windows_sys::Win32::System::Threading::{
-    CreateMutexW, GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
+    CreateMutexW, GetCurrentThread, GetCurrentThreadId, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
 };
 use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
@@ -59,6 +59,8 @@ const WM_TRAY: u32 = WM_APP + 1;
 const WM_GUARD: u32 = WM_APP + 2;
 /// A second catguard.exe was started: show the window of this one.
 const WM_OPEN: u32 = WM_APP + 3;
+/// UI thread to hook thread: lock the keyboard now.
+const WM_LOCK_NOW: u32 = WM_APP + 4;
 const GUARD_LOCK: usize = 0;
 const GUARD_DETER: usize = 1;
 const GUARD_PROGRESS: usize = 2;
@@ -103,6 +105,7 @@ static LOCKED: AtomicBool = AtomicBool::new(false);
 static UNLOCK_CLICKED: AtomicBool = AtomicBool::new(false);
 static APP_OPEN: AtomicBool = AtomicBool::new(false);
 static APP_HWND: AtomicIsize = AtomicIsize::new(0);
+static HOOK_THREAD: AtomicU32 = AtomicU32::new(0);
 /// A key reached the programs after the last unlock. Backspace would then
 /// delete what the human typed, not what the cat typed.
 static TYPED_SINCE_UNLOCK: AtomicBool = AtomicBool::new(false);
@@ -155,11 +158,14 @@ struct Ui {
     lime_brush: isize,
     icon: isize,
     dpi: i32,
-    wav: &'static [u8],
     taskbar_created: u32,
 }
 
 static UI: OnceLock<Ui> = OnceLock::new();
+
+/// The sound that is playing. `PlaySoundW` reads it while it plays, so it has
+/// to stay alive until the next one replaces it.
+static PLAYING: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 struct App {
     window: Window,
@@ -183,6 +189,11 @@ pub fn run() {
     }
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    // tao registers the keyboard for raw input. While a process that did so
+    // is in the foreground, Windows stops calling that process's low-level
+    // keyboard hook. That switched the guard off exactly while the app window
+    // had the focus. catguard needs no raw input, so it is removed.
+    event_loop.set_device_event_filter(DeviceEventFilter::Always);
     let _ = PROXY.set(event_loop.create_proxy());
     unsafe {
         let _ = UI.set(create_native_windows());
@@ -264,6 +275,7 @@ thread_local! {
 fn hook_thread() {
     unsafe {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+        HOOK_THREAD.store(GetCurrentThreadId(), Relaxed);
         let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), GetModuleHandleW(null()), 0);
         if hook.is_null() {
             MessageBoxW(
@@ -278,8 +290,10 @@ fn hook_thread() {
         // thread handles itself is its poll timer.
         let mut msg: MSG = zeroed();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
-            if msg.message == WM_TIMER {
-                on_timer();
+            match msg.message {
+                WM_TIMER => on_timer(),
+                WM_LOCK_NOW => lock_now(),
+                _ => {}
             }
         }
     }
@@ -345,6 +359,17 @@ fn on_key(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
         }
         verdict.swallow
     })
+}
+
+fn lock_now() {
+    HOOK.with(|state| {
+        let state = &mut *state.borrow_mut();
+        let now = state.started.elapsed().as_micros() as u64;
+        if let Some(action) = state.guard.lock_now(now) {
+            *INCIDENT.lock().unwrap() = state.guard.incident(now);
+            post(Some(action));
+        }
+    });
 }
 
 fn on_timer() {
@@ -444,7 +469,10 @@ fn on_ipc(app: &mut App, message: &str) {
             return reveal(app);
         }
         "pause" => unsafe { set_paused(value.as_bool().unwrap_or(false)) },
-        "test_sound" => unsafe { play(true) },
+        "test_sound" => unsafe { play(Some(serde_json::from_value(value.clone()).unwrap_or_default())) },
+        "lock_now" => unsafe {
+            PostThreadMessageW(HOOK_THREAD.load(Relaxed), WM_LOCK_NOW, 0, 0);
+        },
         "undo" => unsafe { undo() },
         "set" => match (message["key"].as_str().unwrap_or_default(), value) {
             ("sensitivity", Value::String(_)) => {
@@ -455,6 +483,11 @@ fn on_ipc(app: &mut App, message: &str) {
             ("word", Value::String(word)) => change_settings(|s| s.word = word.clone()),
             ("theme", Value::String(theme)) => change_settings(|s| s.theme = theme.clone()),
             ("sound", Value::Bool(on)) => change_settings(|s| s.sound = *on),
+            ("sound_kind", Value::String(_)) => {
+                if let Ok(kind) = serde_json::from_value::<Sound>(value.clone()) {
+                    change_settings(|s| s.sound_kind = kind);
+                }
+            }
             ("autostart", Value::Bool(on)) => unsafe { set_autostart(*on) },
             _ => {}
         },
@@ -512,7 +545,7 @@ unsafe fn state_json(with_key_names: bool) -> Value {
         "key_names": key_names,
         "stats": { "locks": settings.locks },
         "settings": {
-            "sensitivity": settings.sensitivity, "sound": settings.sound, "word": settings.word,
+            "sensitivity": settings.sensitivity, "sound": settings.sound, "sound_kind": settings.sound_kind, "word": settings.word,
             "theme": settings.theme, "autostart": autostart_enabled(),
         },
         "incident": incident,
@@ -525,6 +558,7 @@ fn rule_name(rule: Rule) -> &'static str {
         Rule::Chord => "chord",
         Rule::Pair => "pair",
         Rule::Sit => "sit",
+        Rule::Manual => "manual",
     }
 }
 
@@ -630,7 +664,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lpa
         WM_GUARD => {
             match wparam {
                 GUARD_LOCK => on_lock(ui, lparam),
-                GUARD_DETER => play(false),
+                GUARD_DETER => play(None),
                 GUARD_PROGRESS => set_progress(ui, lparam as usize),
                 GUARD_UNLOCK => on_unlock(ui),
                 _ => {}
@@ -756,13 +790,13 @@ unsafe fn create_native_windows() -> Ui {
         lime_brush: CreateSolidBrush(LIME) as isize,
         icon: LoadImageW(instance, ICON_APP as *const u16, IMAGE_ICON, px(72), px(72), 0) as isize,
         dpi,
-        wav: Box::leak(harmonica_wav().into_boxed_slice()),
         taskbar_created: RegisterWindowMessageW(w!("TaskbarCreated")),
     }
 }
 
 unsafe fn on_lock(ui: &Ui, rule: isize) {
-    const RULES: [(Rule, &str); 4] = [
+    const RULES: [(Rule, &str); 5] = [
+        (Rule::Manual, "you locked it"),
         (Rule::Slam, "three keys at once"),
         (Rule::Chord, "four keys in one spot"),
         (Rule::Pair, "two neighbouring keys held"),
@@ -791,7 +825,7 @@ unsafe fn on_lock(ui: &Ui, rule: isize) {
     TYPED_SINCE_UNLOCK.store(false, Relaxed);
     change_settings(|s| s.locks += 1);
     SetWindowPos(ui.lock as HWND, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    play(false);
+    play(None);
 }
 
 /// Hides the lock. If keys got through, the app opens on the page that shows
@@ -816,11 +850,20 @@ unsafe fn set_progress(ui: &Ui, typed: usize) {
     SetWindowTextW(ui.progress as HWND, wide(text.trim_end()).as_ptr());
 }
 
-unsafe fn play(even_if_muted: bool) {
-    let Some(ui) = UI.get() else { return };
-    if even_if_muted || settings().sound {
-        PlaySoundW(ui.wav.as_ptr().cast(), null_mut(), SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+/// Plays the chosen deterrent, or `preview` from the settings page even when
+/// the sound is switched off.
+unsafe fn play(preview: Option<Sound>) {
+    let (enabled, chosen) = {
+        let settings = settings();
+        (settings.sound, settings.sound_kind)
+    };
+    if preview.is_none() && !enabled {
+        return;
     }
+    let mut playing = PLAYING.lock().unwrap();
+    PlaySoundW(null(), null_mut(), 0); // stop, so that the old buffer is free
+    *playing = preview.unwrap_or(chosen).wav();
+    PlaySoundW(playing.as_ptr().cast(), null_mut(), SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
 }
 
 unsafe fn set_paused(paused: bool) {

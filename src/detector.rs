@@ -24,6 +24,9 @@ pub enum Rule {
     Pair,
     /// Three keys held for seconds: the cat lies on the keyboard.
     Sit,
+    /// No pattern. The human locked the keyboard by hand, to wipe it or to
+    /// leave the desk.
+    Manual,
 }
 
 #[derive(Clone, Debug)]

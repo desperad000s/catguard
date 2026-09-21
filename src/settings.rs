@@ -6,12 +6,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::detector::Sensitivity;
 use crate::guard::UNLOCK_WORD;
+use crate::sound::Sound;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub sensitivity: Sensitivity,
     pub sound: bool,
+    pub sound_kind: Sound,
     pub word: String,
     /// "dark", "light" or "system".
     pub theme: String,
@@ -22,7 +24,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { sensitivity: Sensitivity::Normal, sound: true, word: UNLOCK_WORD.into(), theme: "dark".into(), locks: 0 }
+        Self { sensitivity: Sensitivity::Normal, sound: true, sound_kind: Sound::Harmonica, word: UNLOCK_WORD.into(), theme: "dark".into(), locks: 0 }
     }
 }
 

@@ -1,3 +1,5 @@
+#pragma code_page(65001)
+
 // The lowest-numbered icon is the one Explorer shows for the exe.
 1 ICON "catguard.ico"
 2 ICON "tray-active.ico"
@@ -7,8 +9,8 @@
 1 24 "catguard.manifest"
 
 1 VERSIONINFO
-FILEVERSION 0,2,0,0
-PRODUCTVERSION 0,2,0,0
+FILEVERSION 0,3,0,0
+PRODUCTVERSION 0,3,0,0
 FILEOS 0x40004
 FILETYPE 0x1
 {
@@ -18,11 +20,11 @@ FILETYPE 0x1
     {
       VALUE "ProductName", "catguard"
       VALUE "FileDescription", "catguard"
-      VALUE "CompanyName", "Hendrik Hohnrath"
-      VALUE "LegalCopyright", "MIT License"
+      VALUE "CompanyName", "WEBSEED OÜ"
+      VALUE "LegalCopyright", "© 2026 WEBSEED OÜ. MIT License."
       VALUE "OriginalFilename", "catguard.exe"
-      VALUE "FileVersion", "0.2.0"
-      VALUE "ProductVersion", "0.2.0"
+      VALUE "FileVersion", "0.3.0"
+      VALUE "ProductVersion", "0.3.0"
     }
   }
   BLOCK "VarFileInfo" { VALUE "Translation", 0x0409, 0x04B0 }

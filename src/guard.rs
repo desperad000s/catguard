@@ -93,6 +93,18 @@ impl Guard {
         self.history.clear();
     }
 
+    /// Locks without a pattern, for the "lock now" button.
+    pub fn lock_now(&mut self, now: Micros) -> Option<Action> {
+        if self.locked {
+            return None;
+        }
+        self.history.mark_lock(Rule::Manual, now, now);
+        self.locked = true;
+        self.typed.clear();
+        self.last_sound = now;
+        Some(Action::Lock(Rule::Manual))
+    }
+
     /// The unlock button was clicked.
     pub fn unlock(&mut self) {
         self.locked = false;
@@ -359,6 +371,18 @@ mod tests {
         assert_eq!(g.poll(330 * MS), None);
         assert_eq!(down(&mut g, 's', 340), SWALLOW);
         assert_eq!(up(&mut g, 's'), PASS);
+    }
+
+    #[test]
+    fn locking_by_hand_blocks_keys_and_blames_nothing_on_the_cat() {
+        let mut g = guard();
+        assert_eq!(down(&mut g, 'a', 0), PASS);
+        up(&mut g, 'a');
+        assert_eq!(g.lock_now(500 * MS), Some(Action::Lock(Rule::Manual)));
+        assert_eq!(g.lock_now(600 * MS), None);
+        assert!(down(&mut g, 'x', 700).swallow);
+        let incident = g.incident(800 * MS).unwrap();
+        assert!(incident.leaks().is_empty() && incident.undo_plan().is_empty());
     }
 
     #[test]

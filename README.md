@@ -11,7 +11,12 @@ network access. The only file it writes is its settings.
 
 ## Use it
 
-Start `catguard.exe`. A round cat icon appears in the tray: a lime ring while
+Run `catguard-setup-x.y.z.exe`. It installs for your Windows account only
+(no administrator rights), adds a Start menu entry and an uninstaller, and
+starts catguard in the tray when you sign in. `catguard.exe` also runs on its
+own without being installed.
+
+A round cat icon appears in the tray: a lime ring while
 it watches, a grey one while it is paused. A left click opens the app, a
 right click has pause and exit.
 
@@ -26,8 +31,15 @@ The app has three pages:
 - **Watch** shows whether catguard is on, and a keyboard whose keys light up
   as you press them, so you can try a flat hand and see what catguard sees.
 - **Incident** shows the last lock: see the next section.
-- **Settings**: sensitivity (relaxed for gamers, normal, kitten), the
-  harmonica, the unlock word, start with Windows, dark or light.
+- **Settings**: sensitivity (relaxed for gamers, normal, kitten), the sound,
+  the unlock word, start with Windows, dark or light.
+
+Watch also has a button that locks the keyboard by hand, for wiping it.
+
+There are four sounds, all synthesized: the harmonica PawSense has used since
+1999, a cat's hiss, two bursts like a can of compressed air, and a tone at 15
+to 17 kHz that most adults barely hear. None is proven for every cat. Pick
+the one yours dislikes.
 
 The app window is a WebView2 page that exists only while it is open. Closed,
 catguard is the keyboard hook and a tray icon. WebView2 is part of Windows 11
@@ -120,7 +132,9 @@ from reasoning about hands and paws, not yet from recordings of real cats.
 cargo test                      # the detection core, on any OS
 cargo build --release           # on Windows, MSVC toolchain
 cargo xwin build --release --target x86_64-pc-windows-msvc   # from Linux
-python3 assets/make_icons.py    # regenerate the .ico files, needs Pillow
+makensis -DVERSION=0.3.0 installer/catguard.nsi                # the setup
+python3 assets/make_icons.py    # all icons from one drawing; rsvg-convert, Pillow
+tests/wine-smoke.sh             # the real exe under Wine: lock, swallow, unlock
 ```
 
 The Linux build needs `cargo install cargo-xwin` plus `lld` and `llvm`
@@ -144,8 +158,9 @@ signed file. The realistic routes for this project:
 - Azure Artifact Signing, about 10 USD a month, is open to companies in the
   EU and to individuals in the USA and Canada.
 
-Until then: the exe carries a manifest and version information, and the
-download page should publish its SHA-256.
+Until then: the exe and the setup carry version information naming WEBSEED
+OÜ, and the download page should publish their SHA-256. An installer does
+not remove the warning. It is unsigned too, and the same rules apply to it.
 
 ## Layout
 
@@ -157,7 +172,9 @@ download page should publish its SHA-256.
 - `src/settings.rs`: the settings file and its sanitizing
 - `src/win.rs`: hook thread, tray, lock window, the app window and its messages
 - `ui/index.html`: the app, one file, no build step
-- `assets/`: icons, cut and drawn by `make_icons.py` from `src/icon-sheet.png`
+- `assets/`: every icon, rendered by `make_icons.py` from one vector drawing
+- `installer/catguard.nsi`: the per-user setup
+- `tests/wine-smoke.sh`: end-to-end check of the exe under Wine
 
 ## Credit
 
