@@ -28,7 +28,7 @@ use catguard::guard::{Action, Guard};
 use catguard::history::{Incident, Mods, UndoStep, LOOKBACK};
 use catguard::layout::{is_printable, EXTENDED};
 use catguard::settings::Settings;
-use catguard::snapshot::{diff, Change, Snapshot};
+use catguard::snapshot::{diff, opened, Change, Snapshot};
 use catguard::sound::Sound;
 
 use crate::win_state;
@@ -158,13 +158,33 @@ static INCIDENT: Mutex<Option<Incident>> = Mutex::new(None);
 static BASELINES: Mutex<VecDeque<Snapshot>> = Mutex::new(VecDeque::new());
 /// The oldest baseline at the moment of the last lock.
 static BEFORE: Mutex<Option<Snapshot>> = Mutex::new(None);
+/// The PC at the moment the lock fell. What differs from this afterwards
+/// happened while the keyboard was locked, so no human typed it.
+static AT_LOCK: Mutex<Option<Snapshot>> = Mutex::new(None);
 
-/// What is different now from before the last lock.
-unsafe fn changes() -> Vec<Change> {
-    match &*BEFORE.lock().unwrap() {
-        Some(before) => diff(before, &win_state::take()),
-        None => Vec::new(),
-    }
+/// What changed while the keyboard was locked, without new windows.
+unsafe fn changes_while_locked(now: &Snapshot) -> Vec<Change> {
+    AT_LOCK.lock().unwrap().as_ref().map_or(Vec::new(), |at_lock| diff(at_lock, now))
+}
+
+/// What is different now from before the last lock. The flag says that it
+/// happened while the keyboard was locked.
+unsafe fn changes() -> Vec<(Change, bool)> {
+    let now = win_state::take();
+    let while_locked = changes_while_locked(&now);
+    let since_before = match &*BEFORE.lock().unwrap() {
+        Some(before) => diff(before, &now),
+        None => while_locked.clone(),
+    };
+    let new_windows = AT_LOCK.lock().unwrap().as_ref().map_or(Vec::new(), |at_lock| opened(at_lock, &now));
+    since_before
+        .into_iter()
+        .map(|change| {
+            let locked = while_locked.contains(&change);
+            (change, locked)
+        })
+        .chain(new_windows.into_iter().map(|change| (change, true)))
+        .collect()
 }
 
 /// The state comparison knows whether a switch really is flipped. Where it
@@ -312,6 +332,12 @@ struct HookState {
     started: Instant,
     timer: usize,
     settings_seen: u32,
+    /// The setting "lock touchpad and mouse too".
+    lock_pointer: bool,
+    /// The mouse hook, installed only while it has something to block. A
+    /// low-level mouse hook costs a thread switch per mouse move, which is
+    /// not worth paying while nothing is locked.
+    mouse_hook: isize,
 }
 
 thread_local! {
@@ -320,6 +346,8 @@ thread_local! {
         started: Instant::now(),
         timer: 0,
         settings_seen: 0,
+        lock_pointer: false,
+        mouse_hook: 0,
     });
 }
 
@@ -350,12 +378,33 @@ fn hook_thread() {
     }
 }
 
+/// Installed only while the pointer is locked, so it swallows everything.
+/// The cursor freezes where it is. Ctrl+Alt+Del is out of any hook's reach.
+unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code == HC_ACTION as i32 {
+        return 1;
+    }
+    CallNextHookEx(null_mut(), code, wparam, lparam)
+}
+
+/// Locks or frees the pointer to match the guard. Called after everything
+/// that can lock or unlock.
+fn sync_pointer(state: &mut HookState) {
+    let wanted = state.lock_pointer && state.guard.is_locked();
+    unsafe {
+        if wanted && state.mouse_hook == 0 {
+            state.mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), GetModuleHandleW(null()), 0) as isize;
+        } else if !wanted && state.mouse_hook != 0 {
+            UnhookWindowsHookEx(state.mouse_hook as HHOOK);
+            state.mouse_hook = 0;
+        }
+    }
+}
+
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
         let event = &*(lparam as *const KBDLLHOOKSTRUCT);
-        // Injected input comes from software (macros, on-screen keyboards,
-        // remote control), never from a paw.
-        if event.flags & LLKHF_INJECTED == 0 && on_key(event, wparam as u32) {
+        if on_key(event, wparam as u32) {
             return 1;
         }
     }
@@ -368,6 +417,7 @@ fn on_key(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
         let state = &mut *state.borrow_mut();
         if PAUSED.load(Relaxed) {
             state.guard.reset();
+            sync_pointer(state);
             return false;
         }
         if UNLOCK_CLICKED.swap(false, Relaxed) {
@@ -380,11 +430,28 @@ fn on_key(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
             let settings = settings().clone();
             state.guard.set_thresholds(Thresholds::for_sensitivity(settings.sensitivity));
             state.guard.set_unlock_word(&settings.word);
+            state.lock_pointer = settings.lock_pointer;
         }
 
         let extended = if event.flags & LLKHF_EXTENDED != 0 { EXTENDED } else { 0 };
         let key = event.scanCode as u16 | extended;
         let now = state.started.elapsed().as_micros() as u64;
+
+        // Injected input comes from software: macros, the on-screen keyboard,
+        // and the hotkey drivers of laptop makers, which turn Fn combinations
+        // into injected keys. It is never a paw, but while locked it must not
+        // get through either.
+        if event.flags & LLKHF_INJECTED != 0 {
+            let down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
+            let swallow = state.guard.injected(key, event.vkCode as u8, down, now);
+            if swallow {
+                *INCIDENT.lock().unwrap() = state.guard.incident(now);
+                post(None);
+            }
+            sync_pointer(state);
+            return swallow;
+        }
+
         let verdict = if message == WM_KEYDOWN || message == WM_SYSKEYDOWN {
             let verdict = state.guard.key_down(key, event.vkCode as u8, now);
             // Typing into catguard's own window does not change the text the
@@ -408,6 +475,7 @@ fn on_key(event: &KBDLLHOOKSTRUCT, message: u32) -> bool {
         if state.timer == 0 && !state.guard.is_idle() {
             state.timer = unsafe { SetTimer(null_mut(), 0, POLL_MS, None) };
         }
+        sync_pointer(state);
         verdict.swallow
     })
 }
@@ -420,6 +488,7 @@ fn lock_now() {
             *INCIDENT.lock().unwrap() = state.guard.incident(now);
             post(Some(action));
         }
+        sync_pointer(state);
     });
 }
 
@@ -438,6 +507,7 @@ fn on_timer() {
             unsafe { KillTimer(null_mut(), state.timer) };
             state.timer = 0;
         }
+        sync_pointer(state);
     });
 }
 
@@ -540,6 +610,8 @@ fn on_ipc(app: &mut App, message: &str) {
             ("word", Value::String(word)) => change_settings(|s| s.word = word.clone()),
             ("theme", Value::String(theme)) => change_settings(|s| s.theme = theme.clone()),
             ("sound", Value::Bool(on)) => change_settings(|s| s.sound = *on),
+            ("auto_restore", Value::Bool(on)) => change_settings(|s| s.auto_restore = *on),
+            ("lock_pointer", Value::Bool(on)) => change_settings(|s| s.lock_pointer = *on),
             ("sound_kind", Value::String(_)) => {
                 if let Ok(kind) = serde_json::from_value::<Sound>(value.clone()) {
                     change_settings(|s| s.sound_kind = kind);
@@ -566,7 +638,15 @@ unsafe fn state_json(with_key_names: bool) -> Value {
             .iter()
             .filter(|p| p.up.unwrap_or(until) >= from)
             .map(|p| {
-                let kind = if !p.passed { "blocked" } else if incident.during_paw(p) { "cat" } else { "human" };
+                let kind = if !p.passed {
+                    "blocked"
+                } else if p.injected {
+                    "software"
+                } else if incident.during_paw(p) {
+                    "cat"
+                } else {
+                    "human"
+                };
                 json!({ "name": key_label(p.key), "down": p.down, "up": p.up, "kind": kind, "repeats": p.repeats })
             })
             .collect();
@@ -577,7 +657,7 @@ unsafe fn state_json(with_key_names: bool) -> Value {
             .collect();
         let undo: Vec<String> = changed
             .iter()
-            .filter_map(Change::undo)
+            .filter_map(|(c, _)| c.undo())
             .chain(incident.undo_plan().iter().filter(|step| !covered_by_state(step)).map(|step| match step {
                 UndoStep::Press(mods, vk) => format!("press {}", combo_name(*mods, *vk)),
                 UndoStep::Backspace(n) => format!("remove {n} characters"),
@@ -585,7 +665,7 @@ unsafe fn state_json(with_key_names: bool) -> Value {
             .collect();
         let changes: Vec<Value> = changed
             .iter()
-            .map(|c| json!({ "text": c.text(), "advice": c.advice(), "undo": c.undo().is_some() }))
+            .map(|(c, locked)| json!({ "text": c.text(), "advice": c.advice(), "undo": c.undo().is_some(), "while_locked": locked }))
             .collect();
         json!({
             "when": info.when, "rule": rule_name(incident.rule), "target": info.title,
@@ -610,7 +690,7 @@ unsafe fn state_json(with_key_names: bool) -> Value {
         "stats": { "locks": settings.locks },
         "settings": {
             "sensitivity": settings.sensitivity, "sound": settings.sound, "sound_kind": settings.sound_kind, "word": settings.word,
-            "theme": settings.theme, "autostart": autostart_enabled(),
+            "theme": settings.theme, "autostart": autostart_enabled(), "auto_restore": settings.auto_restore, "lock_pointer": settings.lock_pointer,
         },
         "incident": incident,
     })
@@ -682,7 +762,7 @@ unsafe fn undo() {
     };
     let note = |text: String| LOCK_INFO.lock().unwrap().undo_note = text;
 
-    let reversible: Vec<Change> = changes().into_iter().filter(|c| c.undo().is_some()).collect();
+    let reversible: Vec<Change> = changes().into_iter().map(|(c, _)| c).filter(|c| c.undo().is_some()).collect();
     let mut steps = incident.undo_plan();
     steps.retain(|step| !covered_by_state(step));
     if TYPED_SINCE_UNLOCK.load(Relaxed) {
@@ -910,9 +990,14 @@ unsafe fn on_lock(ui: &Ui, rule: isize) {
         (Rule::Sit, "keys held for seconds"),
     ];
     let reason = RULES.iter().find(|(r, _)| *r as isize == rule).map_or("", |(_, text)| text);
-    let word = settings().word.clone();
-    let text = format!("The keyboard is locked: {reason}.\nType  {word}  to unlock it, or click the button.");
+    let (word, pointer_locked) = {
+        let settings = settings();
+        (settings.word.clone(), settings.lock_pointer)
+    };
+    let how = if pointer_locked { "to unlock. Touchpad and mouse are locked too." } else { "to unlock it, or click the button." };
+    let text = format!("The keyboard is locked: {reason}.\nType  {word}  {how}");
     SetWindowTextW(ui.detail as HWND, wide(&text).as_ptr());
+    ShowWindow(ui.human as HWND, if pointer_locked { SW_HIDE } else { SW_SHOWNA });
     set_progress(ui, 0);
 
     let focus = GetForegroundWindow();
@@ -929,6 +1014,7 @@ unsafe fn on_lock(ui: &Ui, rule: isize) {
     };
 
     *BEFORE.lock().unwrap() = BASELINES.lock().unwrap().front().cloned();
+    *AT_LOCK.lock().unwrap() = Some(win_state::take());
     LOCKED.store(true, Relaxed);
     TYPED_SINCE_UNLOCK.store(false, Relaxed);
     change_settings(|s| s.locks += 1);
@@ -942,10 +1028,31 @@ unsafe fn on_unlock(ui: &Ui) {
     LOCKED.store(false, Relaxed);
     TYPED_SINCE_UNLOCK.store(false, Relaxed);
     ShowWindow(ui.lock as HWND, SW_HIDE);
+    put_back_what_changed_while_locked();
     let leaked = INCIDENT.lock().unwrap().as_ref().is_some_and(|i| !i.leaks().is_empty());
     if leaked || !changes().is_empty() {
         notify(UserEvent::Open(Some("incident")));
     }
+}
+
+/// An Fn combination can bypass every keyboard filter, because the laptop
+/// handles it before Windows sees a key. What it changed while the keyboard
+/// was locked is certain not to be the human's typing, so catguard puts it
+/// back without asking. New windows are left for the Undo button.
+unsafe fn put_back_what_changed_while_locked() {
+    if !settings().auto_restore {
+        return;
+    }
+    let fixable: Vec<Change> = changes_while_locked(&win_state::take()).into_iter().filter(|c| c.undo().is_some()).collect();
+    if fixable.is_empty() {
+        return;
+    }
+    let target = LOCK_INFO.lock().unwrap().target;
+    if let Some(at_lock) = &*AT_LOCK.lock().unwrap() {
+        win_state::restore(at_lock, &fixable, target as HWND);
+    }
+    let done: Vec<String> = fixable.iter().map(Change::text).collect();
+    LOCK_INFO.lock().unwrap().undo_note = format!("Changed while the keyboard was locked and already put back: {}.", done.join("; "));
 }
 
 unsafe fn set_progress(ui: &Ui, typed: usize) {

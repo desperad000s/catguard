@@ -51,6 +51,8 @@ pub enum Change {
     Touchpad { on: bool },
     FlightMode { on: bool },
     WindowClosed { title: String },
+    /// Only reported for the time the keyboard was locked, see [`opened`].
+    WindowOpened { title: String, handle: usize },
     DeviceGone { name: String },
     DeviceBroken { name: String, problem: u32 },
     DeviceNew { name: String },
@@ -116,6 +118,18 @@ pub fn diff(before: &Snapshot, after: &Snapshot) -> Vec<Change> {
     changes
 }
 
+/// Windows that appeared between two snapshots. Only meaningful across a
+/// lock: over a whole minute the human opens windows too, but while the
+/// keyboard is locked a new window is the cat's, or an Fn key's.
+pub fn opened(at_lock: &Snapshot, after: &Snapshot) -> Vec<Change> {
+    after
+        .windows
+        .iter()
+        .filter(|(handle, _)| !at_lock.windows.iter().any(|(h, _)| h == handle))
+        .map(|(handle, title)| Change::WindowOpened { title: title.clone(), handle: *handle })
+        .collect()
+}
+
 fn on_off(on: bool) -> &'static str {
     if on { "on" } else { "off" }
 }
@@ -139,6 +153,7 @@ impl Change {
             Change::Rotation { .. } => "The screen got rotated".into(),
             Change::Touchpad { on } => format!("The touchpad got switched {}", on_off(*on)),
             Change::FlightMode { on } => format!("Flight mode got switched {}", on_off(*on)),
+            Change::WindowOpened { title, .. } => format!("A window opened while the keyboard was locked: \"{title}\""),
             Change::WindowClosed { title } => format!("A window closed: \"{title}\""),
             Change::DeviceGone { name } => format!("A device is gone: {name}"),
             Change::DeviceBroken { name, problem } => {
@@ -179,6 +194,7 @@ impl Change {
             Change::Language { from, .. } => format!("switch the input language back to {from}"),
             Change::Rotation { .. } => "rotate the screen back".into(),
             Change::Touchpad { on: false } => "press the touchpad key (Ctrl+Win+F24)".into(),
+            Change::WindowOpened { title, .. } => format!("close \"{title}\""),
             _ => return None,
         })
     }
@@ -259,6 +275,17 @@ mod tests {
         after.windows[0].1 = "Angebot final.docx - Word".into(); // renamed, still open
         after.windows.remove(1);
         assert_eq!(diff(&desk(), &after), [Change::WindowClosed { title: "Posteingang - Outlook".into() }]);
+    }
+
+    #[test]
+    fn a_window_that_appears_while_locked_is_reported_and_can_be_closed() {
+        // 21.09.2026: Fn+F9 opened Lenovo Vantage while the keyboard was locked.
+        let mut after = desk();
+        after.windows.push((7, "Lenovo Vantage".into()));
+        let changes = opened(&desk(), &after);
+        assert_eq!(changes, [Change::WindowOpened { title: "Lenovo Vantage".into(), handle: 7 }]);
+        assert_eq!(changes[0].undo().unwrap(), "close \"Lenovo Vantage\"");
+        assert_eq!(diff(&desk(), &after), [], "the one-minute comparison ignores new windows");
     }
 
     #[test]

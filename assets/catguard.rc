@@ -9,8 +9,8 @@
 1 24 "catguard.manifest"
 
 1 VERSIONINFO
-FILEVERSION 0,4,0,0
-PRODUCTVERSION 0,4,0,0
+FILEVERSION 0,4,1,0
+PRODUCTVERSION 0,4,1,0
 FILEOS 0x40004
 FILETYPE 0x1
 {
@@ -23,8 +23,8 @@ FILETYPE 0x1
       VALUE "CompanyName", "webseed OÜ"
       VALUE "LegalCopyright", "© 2026 webseed OÜ. MIT License."
       VALUE "OriginalFilename", "catguard.exe"
-      VALUE "FileVersion", "0.4.0"
-      VALUE "ProductVersion", "0.4.0"
+      VALUE "FileVersion", "0.4.1"
+      VALUE "ProductVersion", "0.4.1"
     }
   }
   BLOCK "VarFileInfo" { VALUE "Translation", 0x0409, 0x04B0 }

@@ -65,6 +65,9 @@ pub struct Press {
     pub passed: bool,
     /// Auto-repeats that reached the applications after the first key-down.
     pub repeats: u32,
+    /// Sent by software, not pressed. Laptop makers' hotkey drivers do this:
+    /// Fn+F10 can arrive as a Ctrl+Win+F24 that a driver injects.
+    pub injected: bool,
 }
 
 #[derive(Default)]
@@ -76,6 +79,17 @@ pub struct History {
 
 impl History {
     pub fn key_down(&mut self, key: KeyCode, vk: u8, now: Micros, passed: bool, repeat: bool) {
+        self.record(key, vk, now, passed, repeat, false);
+    }
+
+    /// A key that software sent. It is recorded like any other, because it
+    /// is often the visible half of an Fn combination.
+    pub fn injected_down(&mut self, key: KeyCode, vk: u8, now: Micros, passed: bool) {
+        let repeat = self.presses.iter().any(|p| p.key == key && p.up.is_none());
+        self.record(key, vk, now, passed, repeat, true);
+    }
+
+    fn record(&mut self, key: KeyCode, vk: u8, now: Micros, passed: bool, repeat: bool, injected: bool) {
         if repeat {
             if let Some(open) = self.presses.iter_mut().rev().find(|p| p.key == key && p.up.is_none()) {
                 open.repeats += u32::from(passed);
@@ -94,7 +108,7 @@ impl History {
         if self.presses.len() == CAPACITY {
             self.presses.pop_front();
         }
-        self.presses.push_back(Press { key, vk, mods, down: now, up: None, passed, repeats: 0 });
+        self.presses.push_back(Press { key, vk, mods, down: now, up: None, passed, repeats: 0, injected });
     }
 
     pub fn key_up(&mut self, key: KeyCode, now: Micros) {
@@ -223,7 +237,7 @@ impl Incident {
                     (Undo::PressInstead(..), Some(_)) => {}
                     (_, None) => steps.push(step),
                 }
-            } else if self.during_paw(p) {
+            } else if self.during_paw(p) && !p.injected {
                 if p.mods.types_text() && is_printable(p.key) {
                     typed += 1 + p.repeats;
                 } else {
@@ -436,6 +450,23 @@ mod tests {
         tap(&mut h, letter('m'), 510, true);
         h.key_up(WIN, 600 * MS);
         assert_eq!(slam(&mut h, 1_000).undo_plan()[0], UndoStep::Press(Mods::SHIFT_WIN, b'M'));
+    }
+
+    #[test]
+    fn a_key_sent_by_a_driver_is_recorded_and_its_switch_is_reversible() {
+        // What a hotkey driver does for Fn+F10 on some laptops.
+        let mut h = History::default();
+        h.injected_down(CTRL, 0x11, 500 * MS, true);
+        h.injected_down(WIN, VK_LWIN, 500 * MS, true);
+        h.injected_down(0x76, VK_F24, 501 * MS, true);
+        h.key_up(0x76, 560 * MS);
+        h.key_up(WIN, 560 * MS);
+        h.key_up(CTRL, 560 * MS);
+        let incident = slam(&mut h, 1_000);
+        assert!(incident.presses.iter().filter(|p| p.injected).count() == 3);
+        assert_eq!(incident.undo_plan()[0], UndoStep::Press(Mods::CTRL_WIN, VK_F24));
+        // Injected characters are not the cat's typing.
+        assert_eq!(incident.undo_plan()[1], UndoStep::Backspace(2));
     }
 
     #[test]

@@ -126,6 +126,19 @@ impl Guard {
         verdict
     }
 
+    /// A key that software sent. It never counts as a paw. While locked it is
+    /// swallowed like every other key, because a laptop's hotkey driver turns
+    /// Fn combinations into injected keys, and the cat must not get those
+    /// through either. Returns true when the key must be swallowed.
+    pub fn injected(&mut self, key: KeyCode, vk: u8, down: bool, now: Micros) -> bool {
+        if down {
+            self.history.injected_down(key, vk, now, !self.locked);
+        } else {
+            self.history.key_up(key, now);
+        }
+        self.locked
+    }
+
     fn decide_down(&mut self, key: KeyCode, vk: u8, now: Micros) -> Verdict {
         if self.passed.contains(&key) {
             // Auto-repeat of a key the applications already know is down.
@@ -383,6 +396,25 @@ mod tests {
         assert!(down(&mut g, 'x', 700).swallow);
         let incident = g.incident(800 * MS).unwrap();
         assert!(incident.leaks().is_empty() && incident.undo_plan().is_empty());
+    }
+
+    #[test]
+    fn software_keys_never_lock_but_are_blocked_while_locked() {
+        let mut g = guard();
+        // A macro presses three neighbours at once. No paw.
+        for (i, c) in ['w', 'e', 'd'].into_iter().enumerate() {
+            assert!(!g.injected(key_for(c), c.to_ascii_uppercase() as u8, true, i as u64 * MS));
+            g.injected(key_for(c), 0, false, 50 * MS);
+        }
+        assert!(!g.is_locked());
+
+        slam(&mut g, 1_000);
+        // Fn+F10 arriving as an injected Ctrl+Win+F24 while the cat is on the keys.
+        assert!(g.injected(0x76, 0x87, true, 1_200 * MS));
+        assert!(g.injected(0x76, 0x87, false, 1_250 * MS));
+        let incident = g.incident(1_300 * MS).unwrap();
+        let f24 = incident.presses.iter().find(|p| p.vk == 0x87).unwrap();
+        assert!(f24.injected && !f24.passed);
     }
 
     #[test]

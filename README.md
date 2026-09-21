@@ -42,7 +42,8 @@ I found no free program that does both, so I wrote one.
 - **Locks at once.** Three keys under one paw lock the keyboard on the third
   key. catguard also catches a cat that lies down on the keys, and a paw on a
   laptop keyboard that only reports two keys. Fast typing does not set it off.
-- **Leaves the mouse alone.** Only the keyboard locks.
+- **Leaves the mouse alone, unless you say otherwise.** Only the keyboard
+  locks. A setting freezes touchpad and mouse too, for cats that click.
 - **Unlocks for humans.** Type `human` blind, or click the button. The word
   is yours to change.
 - **Makes a noise cats dislike.** A harmonica, a hiss, a burst of compressed
@@ -104,7 +105,8 @@ The app has three pages:
   for wiping it.
 - **Incident** shows the last lock. The next section describes it.
 - **Settings**: sensitivity (relaxed for gamers, normal, kitten), the sound,
-  the unlock word, start with Windows, dark or light.
+  locking touchpad and mouse too, putting back what changes while locked, the
+  unlock word, start with Windows, dark or light.
 
 There are four sounds. A harmonica, a cat's hiss, two bursts like a can of
 compressed air, and a tone at 15 to 17 kHz that most adults barely hear. I
@@ -172,6 +174,26 @@ touchpad key again. For the rest the page says what to do by hand. Something
 you did yourself in that minute shows up too. What Fn does inside the
 keyboard, Fn lock for example, stays invisible to every program.
 
+#### Fn keys
+
+Fn combinations are the hole in every keyboard lock. The laptop handles them
+before Windows sees a key, so a cat can still switch the touchpad off with
+Fn+F10 or open the maker's tool with Fn+F9 while the keyboard is locked.
+catguard does three things about it:
+
+- Some hotkey drivers turn an Fn combination into keys that software sends.
+  catguard blocks those while locked, and the timeline shows them with a
+  dashed bar.
+- It takes a second picture of the PC when the lock falls. What differs from
+  that picture at the unlock happened while no human could type, so catguard
+  puts it back by itself: touchpad, lock keys, input language, rotation, the
+  accessibility features. A setting switches this off.
+- Windows that opened while the keyboard was locked are listed, and Undo
+  closes them.
+
+An Fn combination that leaves no trace in Windows, Fn lock for example, stays
+out of reach.
+
 `catguard.exe --dump-state file.txt` writes what catguard reads of the PC,
 for bug reports.
 
@@ -228,7 +250,7 @@ from reasoning about hands and paws, not yet from recordings of real cats.
 cargo test                      # the detection core, on any OS
 cargo build --release           # on Windows, MSVC toolchain
 cargo xwin build --release --target x86_64-pc-windows-msvc   # from Linux
-makensis -DVERSION=0.4.0 installer/catguard.nsi                # the setup
+makensis -DVERSION=0.4.1 installer/catguard.nsi                # the setup
 python3 assets/make_icons.py    # all icons from one drawing; rsvg-convert, Pillow
 tests/wine-smoke.sh             # the real exe under Wine: lock, swallow, unlock
 ```

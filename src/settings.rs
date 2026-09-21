@@ -15,6 +15,10 @@ pub struct Settings {
     pub sound: bool,
     pub sound_kind: Sound,
     pub word: String,
+    /// After an unlock, put back what changed while the keyboard was locked.
+    pub auto_restore: bool,
+    /// Freeze touchpad and mouse while the keyboard is locked.
+    pub lock_pointer: bool,
     /// "dark", "light" or "system".
     pub theme: String,
     /// How often the keyboard was locked. The only thing catguard remembers
@@ -24,7 +28,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { sensitivity: Sensitivity::Normal, sound: true, sound_kind: Sound::Harmonica, word: UNLOCK_WORD.into(), theme: "dark".into(), locks: 0 }
+        Self { sensitivity: Sensitivity::Normal, sound: true, sound_kind: Sound::Harmonica, word: UNLOCK_WORD.into(), auto_restore: true, lock_pointer: false, theme: "dark".into(), locks: 0 }
     }
 }
 

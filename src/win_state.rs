@@ -230,6 +230,10 @@ pub unsafe fn restore(before: &Snapshot, changes: &[Change], target: HWND) {
                 (VK_CONTROL, true), (VK_LWIN, true), (VK_F24, true),
                 (VK_F24, false), (VK_LWIN, false), (VK_CONTROL, false),
             ]),
+            // The program gets to ask about unsaved work, as with a click on its X.
+            Change::WindowOpened { handle, .. } => {
+                PostMessageW(*handle as HWND, WM_CLOSE, 0, 0);
+            }
             _ => {}
         }
     }

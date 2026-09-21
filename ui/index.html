@@ -122,6 +122,7 @@ body[data-mode="locked"] .deck { stroke: var(--lime); }
 .bar { position: absolute; top: 0; bottom: 0; min-width: 5px; border-radius: 4px; background: var(--muted); }
 .bar.cat { background: var(--lime); }
 .bar.blocked { background: none; border: 1.5px solid var(--muted); }
+.bar.software { background: none; border: 1.5px dashed var(--lime); }
 .bar.late span { left: auto; right: calc(100% + .5em); }
 .bar span { position: absolute; left: calc(100% + .5em); top: -.15em; white-space: nowrap; color: var(--muted); font-size: .85em; }
 .lockline { position: absolute; top: -.4rem; bottom: -.4rem; width: 2px; background: var(--ink); }
@@ -130,6 +131,7 @@ body[data-mode="locked"] .deck { stroke: var(--lime); }
 .legendline i { display: inline-block; width: 1.4em; height: .75em; border-radius: 3px; margin-right: .5em; background: var(--muted); vertical-align: baseline; }
 .legendline i.cat { background: var(--lime); }
 .legendline i.blocked { background: none; border: 1.5px solid var(--muted); }
+.legendline i.software { background: none; border: 1.5px dashed var(--lime); }
 
 .through { display: grid; grid-template-columns: 1.3fr 1fr; gap: var(--gap); margin-top: var(--gap); align-items: start; }
 .through ul { list-style: none; padding: 0; display: grid; gap: .8rem; margin-top: .8rem; }
@@ -142,6 +144,7 @@ kbd { font: 600 1.1em var(--display); letter-spacing: .04em; background: var(--k
 .changed li p { max-width: 75ch; }
 .mark { font: 600 1em var(--display); letter-spacing: .04em; color: var(--muted); }
 .mark.fixable { color: var(--accent); }
+.mark small { display: block; font: 400 .8em var(--body); letter-spacing: 0; color: var(--muted); }
 .small { font-size: .9em; max-width: 90ch; }
 .empty { margin-top: var(--gap); display: grid; gap: .6rem; }
 
@@ -238,6 +241,14 @@ input[type="text"] { background: var(--panel); border: 1.5px solid var(--line); 
           </div>
           <button class="switch" role="switch" data-setting="sound" aria-label="Sound"></button>
         </div>
+      </div>
+      <div class="setting">
+        <div><h2>Lock touchpad and mouse too</h2><p>A cat on the touchpad can click and drag. With this on, the pointer freezes while the keyboard is locked, and only the unlock word gets you back in. Windows cannot tell a touchpad from a mouse here, so both lock. Ctrl+Alt+Del still works.</p></div>
+        <button class="switch" role="switch" data-setting="lock_pointer" aria-label="Lock touchpad and mouse too"></button>
+      </div>
+      <div class="setting">
+        <div><h2>Put back what changes while locked</h2><p>Fn combinations are handled inside the laptop, so no program can block them. If the touchpad, a lock key, the input language or the screen rotation changes while the keyboard is locked, catguard puts it back at the unlock.</p></div>
+        <button class="switch" role="switch" data-setting="auto_restore" aria-label="Put back what changes while locked"></button>
       </div>
       <div class="setting">
         <div><h2>Unlock word</h2><p>Typed blind while the keyboard is locked. Three to twelve letters, nothing a cat would walk.</p></div>
@@ -439,7 +450,7 @@ function renderIncident(incident) {
     row.append(el("div", "name", name), track); track0 ??= track;
     for (const p of presses) {
       const end = p.up ?? incident.until;
-      const bar = el("div", "bar" + (p.kind === "cat" ? " cat" : p.kind === "blocked" ? " blocked" : ""));
+      const bar = el("div", "bar" + (p.kind === "human" ? "" : " " + p.kind));
       if (pct(end) > 80) bar.classList.add("late");
       bar.style.left = pct(p.down) + "%"; bar.style.width = Math.max(pct(end) - pct(p.down), .4) + "%";
       if (p.kind !== "blocked" && p === presses[presses.length - 1]) bar.append(el("span", "", `${Math.round((end - p.down) / 1000)} ms${p.repeats ? `, repeated ${p.repeats}×` : ""}`));
@@ -449,7 +460,7 @@ function renderIncident(incident) {
   }
   tl.append(rows);
   const legend = el("div", "legendline");
-  for (const [cls, text] of [["cat", "reached your programs while the paw was down"], ["", "typed before"], ["blocked", "blocked"]]) {
+  for (const [cls, text] of [["cat", "reached your programs while the paw was down"], ["", "typed before"], ["blocked", "blocked"], ["software", "sent by software, a hotkey driver for example"]]) {
     const item = el("span"); item.append(el("i", cls), text); legend.append(item);
   }
   tl.append(legend); body.append(tl);
@@ -467,7 +478,9 @@ function renderIncident(incident) {
     const items = el("ul");
     for (const change of incident.changes) {
       const li = el("li"), text = el("div");
-      li.append(el("span", "mark" + (change.undo ? " fixable" : ""), change.undo ? "Undo fixes this" : "Yours to fix"));
+      const mark = el("span", "mark" + (change.undo ? " fixable" : ""), change.undo ? "Undo fixes this" : "Yours to fix");
+      if (change.while_locked) mark.append(el("small", "", "while locked"));
+      li.append(mark);
       text.append(el("p", "", change.text + "."));
       if (change.advice) text.append(el("p", "muted", change.advice));
       li.append(text); items.append(li);
@@ -493,12 +506,12 @@ function renderIncident(incident) {
     undo.append(el("p", "muted", `catguard will ${incident.undo.join(", then ")}. Keys are typed into "${incident.target}".`));
     const go = el("button", "primary", incident.undone ? "Done" : "Undo"); go.disabled = !!incident.undone; go.onclick = () => send({ cmd: "undo" });
     undo.append(go);
-    if (incident.undo_note) undo.append(el("p", "muted", incident.undo_note));
   } else {
     undo.append(el("p", "muted", incident.leaks.length
       ? "A program cannot take this back. catguard sees keys and the state of the PC, not what another program did with a key, so check the window that had the focus."
       : "There is nothing to take back."));
   }
+  if (incident.undo_note) undo.append(el("p", "muted", incident.undo_note));
   through.append(left, undo); body.append(through);
 }
 
@@ -533,20 +546,21 @@ else {
   const q = new URLSearchParams(location.search), t0 = 1_000_000;
   const press = (name, down, up, kind, repeats = 0) => ({ name, down: t0 + down * 1000, up: up == null ? null : t0 + up * 1000, kind, repeats });
   render({
-    version: "0.4.0", paused: q.get("mode") === "paused", locked: q.get("mode") === "locked",
+    version: "0.4.1", paused: q.get("mode") === "paused", locked: q.get("mode") === "locked",
     keyboard: { iso: q.get("kb") !== "ansi", laptop: !q.has("desktop") }, links: ["github", "site", "linkedin"],
     key_names: q.get("kb") === "ansi" ? {} : { 41: "^", 12: "ß", 13: "´", 21: "Z", 44: "Y", 26: "Ü", 27: "+", 39: "Ö", 40: "Ä", 43: "#", 86: "<", 53: "-" },
     stats: { locks: 12 },
-    settings: { sensitivity: "normal", sound: true, sound_kind: "hiss", word: "human", autostart: true, theme: q.get("theme") || "dark" },
+    settings: { sensitivity: "normal", sound: true, sound_kind: "hiss", auto_restore: true, lock_pointer: false, word: "human", autostart: true, theme: q.get("theme") || "dark" },
     incident: q.has("empty") ? null : {
       when: "Today 14:32", rule: "slam", target: "Quarterly report.docx - Word", from: t0, until: t0 + 3_400_000, locked_at: t0 + 3_006_000,
-      presses: [press("H", 300, 390, "human"), press("I", 520, 610, "human"), press("Caps Lock", 2100, 2260, "cat"), press("W", 3000, 3330, "cat"), press("E", 3003, 3340, "cat"), press("D", 3006, 3345, "blocked"), press("X", 3200, null, "blocked")],
+      presses: [press("H", 300, 390, "human"), press("I", 520, 610, "human"), press("Caps Lock", 2100, 2260, "cat"), press("W", 3000, 3330, "cat"), press("E", 3003, 3340, "cat"), press("D", 3006, 3345, "blocked"), press("X", 3200, null, "blocked"), press("F24", 3150, 3200, "blocked")],
       leaks: [{ name: "Caps Lock", count: 1, note: "switched Caps Lock" }, { name: "W", count: 1, note: null }, { name: "E", count: 1, note: null }],
       changes: q.has("clean") ? [] : [
         { text: "A device stopped working: HID-compliant touch pad. Windows says its driver is not installed (code 28)", undo: false,
           advice: "Open Device Manager and choose Action, Scan for hardware changes. If that does not bring it back, run the driver update of your PC's maker, Lenovo Vantage on a Lenovo." },
         { text: "The input language changed from Deutsch (Deutschland) to English (United States)", advice: null, undo: true },
         { text: "Caps Lock is on now", advice: null, undo: true },
+        { text: "A window opened while the keyboard was locked: \"Lenovo Vantage\"", advice: null, undo: true, while_locked: true },
       ],
       has_baseline: true,
       undo: ["switch the input language back to Deutsch (Deutschland)", "switch Caps Lock off", "remove 2 characters"], undone: false, undo_note: "",

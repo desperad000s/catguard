@@ -380,6 +380,17 @@ mod tests {
     }
 
     #[test]
+    fn a_paw_on_the_number_pad_is_a_paw() {
+        // 21.09.2026, a real cat: 6, 9, 5 and 8 on the number pad, all within
+        // a few milliseconds, held for 300 ms. It went unnoticed because the
+        // number pad had no positions.
+        let mut d = detector();
+        assert_eq!(d.key_down(0x4D, 0), None);
+        assert_eq!(d.key_down(0x49, 3 * MS), None);
+        assert_eq!(d.key_down(0x4C, 6 * MS), Some(Rule::Slam));
+    }
+
+    #[test]
     fn a_lost_key_up_is_forgotten() {
         let mut d = detector();
         d.key_down(key_for('l'), 0);

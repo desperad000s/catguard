@@ -39,7 +39,7 @@ pub fn is_printable(key: KeyCode) -> bool {
 }
 
 /// Position of a key, or `None` for keys without a fixed place across
-/// keyboards (numpad, media keys). Those still count for the rules that do
+/// keyboards (media keys, the block above the arrows). Those still count for the rules that do
 /// not need geometry.
 pub fn position(key: KeyCode) -> Option<Pos> {
     let offset = |base: KeyCode| f32::from(key - base);
@@ -67,6 +67,21 @@ pub fn position(key: KeyCode) -> Option<Pos> {
         0x2C..=0x35 => at(4.0, 2.25 + offset(0x2C)),   // Z .. /
 
         0x39 => Some(Pos { row: 5.0, x: 6.75, half_width: 2.75 }), // Space
+
+        // The number pad, as on a full-size keyboard. Laptops squeeze it, but
+        // which keys are neighbours stays the same. Without these a cat on
+        // the number pad is invisible to every rule that needs geometry.
+        0x45 => at(1.0, 17.0),                         // Num Lock
+        0xE035 => at(1.0, 18.0),                       // /
+        0x37 => at(1.0, 19.0),                         // *
+        0x4A => at(1.0, 20.0),                         // -
+        0x47..=0x49 => at(2.0, 17.0 + offset(0x47)),   // 7 8 9
+        0x4E => at(2.5, 20.0),                         // +, two rows tall
+        0x4B..=0x4D => at(3.0, 17.0 + offset(0x4B)),   // 4 5 6
+        0x4F..=0x51 => at(4.0, 17.0 + offset(0x4F)),   // 1 2 3
+        0xE01C => at(4.5, 20.0),                       // Enter, two rows tall
+        0x52 => Some(Pos { row: 5.0, x: 17.5, half_width: 0.5 }), // 0, two keys wide
+        0x53 => at(5.0, 19.0),                         // .
 
         0xE048 => at(4.0, 14.0),                       // Up
         0xE04B => at(5.0, 13.0),                       // Left
@@ -134,6 +149,14 @@ mod tests {
         assert_eq!(span("v ").1, 0.0);
         assert_eq!(span("m ").1, 0.0);
         assert_eq!(span("z "), (1.0, 1.75));
+    }
+
+    #[test]
+    fn the_number_pad_has_neighbours() {
+        let pad = |codes: &[KeyCode]| extent(&codes.iter().map(|&c| position(c).unwrap()).collect::<Vec<_>>());
+        assert_eq!(pad(&[0x4C, 0x4D, 0x48, 0x49]), (1.0, 1.0)); // 5 6 8 9, one paw
+        assert_eq!(pad(&[0x4E, 0x4A]), (1.5, 0.0));             // + under -
+        assert_eq!(pad(&[0x52, 0x4F]).1, 0.0);                  // 0 under 1
     }
 
     #[test]
