@@ -83,11 +83,17 @@ struct Held {
 pub struct Detector {
     thresholds: Thresholds,
     down: Vec<Held>,
+    hit_since: Micros,
 }
 
 impl Detector {
     pub fn new(thresholds: Thresholds) -> Self {
-        Self { thresholds, down: Vec::with_capacity(16) }
+        Self { thresholds, down: Vec::with_capacity(16), hit_since: 0 }
+    }
+
+    /// When the first key of the pattern that fired last went down.
+    pub fn hit_since(&self) -> Micros {
+        self.hit_since
     }
 
     /// True when no key is tracked, so nobody needs to call [`Self::poll`].
@@ -111,26 +117,22 @@ impl Detector {
         }
         self.forget_stale(now);
         self.down.push(Held { key, since: now, pos: position(key) });
-        if self.slam(now) {
-            Some(Rule::Slam)
-        } else if self.chord() {
-            Some(Rule::Chord)
-        } else {
-            None
-        }
+        let hit = self.slam(now).map(|t| (Rule::Slam, t)).or_else(|| self.chord().map(|t| (Rule::Chord, t)));
+        self.note(hit)
     }
 
     /// Runs the rules that need time to pass. Call every few tens of
     /// milliseconds while [`Self::is_idle`] is false.
     pub fn poll(&mut self, now: Micros) -> Option<Rule> {
         self.forget_stale(now);
-        if self.pair(now) {
-            Some(Rule::Pair)
-        } else if self.sit(now) {
-            Some(Rule::Sit)
-        } else {
-            None
-        }
+        let hit = self.pair(now).map(|t| (Rule::Pair, t)).or_else(|| self.sit(now).map(|t| (Rule::Sit, t)));
+        self.note(hit)
+    }
+
+    fn note(&mut self, hit: Option<(Rule, Micros)>) -> Option<Rule> {
+        let (rule, since) = hit?;
+        self.hit_since = since;
+        Some(rule)
     }
 
     fn forget_stale(&mut self, now: Micros) {
@@ -144,11 +146,9 @@ impl Detector {
 
     /// The newest key plus two others, all down within the window, all under
     /// one paw.
-    fn slam(&self, now: Micros) -> bool {
+    fn slam(&self, now: Micros) -> Option<Micros> {
         let t = &self.thresholds;
-        let Some(newest) = self.down.last().and_then(|h| h.pos) else {
-            return false;
-        };
+        let newest = self.down.last()?.pos?;
         let recent: Vec<(Micros, Pos)> = self
             .placed()
             .filter(|(since, _)| now - since <= t.slam_window)
@@ -164,34 +164,30 @@ impl Detector {
                     height <= 1.0 && width <= t.slam_width
                 };
                 if under_one_paw {
-                    return true;
+                    return Some(now - age);
                 }
             }
         }
-        false
+        None
     }
 
-    fn chord(&self) -> bool {
+    fn chord(&self) -> Option<Micros> {
         let t = &self.thresholds;
-        let Some(newest) = self.down.last().and_then(|h| h.pos) else {
-            return false;
-        };
-        let near: Vec<Pos> = self
+        let newest = self.down.last()?.pos?;
+        let near: Vec<(Micros, Pos)> = self
             .placed()
-            .map(|(_, p)| p)
-            .filter(|p| {
+            .filter(|(_, p)| {
                 let (height, width) = extent(&[*p, newest]);
                 height <= t.chord_height && width <= t.chord_width
             })
             .collect();
-        if near.len() < t.chord_keys {
-            return false;
-        }
-        let (height, width) = extent(&near);
-        height <= t.chord_height && width <= t.chord_width
+        let places: Vec<Pos> = near.iter().map(|(_, p)| *p).collect();
+        let (height, width) = extent(&places);
+        let fits = near.len() >= t.chord_keys && height <= t.chord_height && width <= t.chord_width;
+        fits.then(|| near.iter().map(|(since, _)| *since).min().unwrap_or(0))
     }
 
-    fn pair(&self, now: Micros) -> bool {
+    fn pair(&self, now: Micros) -> Option<Micros> {
         let t = &self.thresholds;
         let placed: Vec<(Micros, Pos)> = self.placed().collect();
         for (i, a) in placed.iter().enumerate() {
@@ -200,17 +196,17 @@ impl Detector {
                 let held = now - a.0.max(b.0) >= t.pair_hold;
                 let (height, width) = extent(&[a.1, b.1]);
                 if together && held && height <= 1.0 && width <= t.pair_width {
-                    return true;
+                    return Some(a.0.min(b.0));
                 }
             }
         }
-        false
+        None
     }
 
-    fn sit(&self, now: Micros) -> bool {
+    fn sit(&self, now: Micros) -> Option<Micros> {
         let t = &self.thresholds;
-        let long_held = self.down.iter().filter(|h| now - h.since >= t.sit_hold).count();
-        long_held >= t.sit_keys
+        let long_held = self.down.iter().filter(|h| now - h.since >= t.sit_hold);
+        (long_held.clone().count() >= t.sit_keys).then(|| long_held.map(|h| h.since).min().unwrap_or(0))
     }
 }
 

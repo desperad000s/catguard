@@ -32,6 +32,12 @@ pub fn is_modifier(key: KeyCode) -> bool {
     )
 }
 
+/// Keys that put a character into a text field: letters, digits,
+/// punctuation and space.
+pub fn is_printable(key: KeyCode) -> bool {
+    matches!(key, 0x02..=0x0D | 0x10..=0x1B | 0x1E..=0x29 | 0x2B..=0x35 | 0x39 | 0x56)
+}
+
 /// Position of a key, or `None` for keys without a fixed place across
 /// keyboards (numpad, media keys). Those still count for the rules that do
 /// not need geometry.

@@ -1,15 +1,19 @@
+<img src="assets/logo.png" width="128" alt="catguard">
+
 # catguard
 
 Locks the keyboard when a cat steps on it. Runs in the Windows tray, plays a
-harmonica at the cat, and unlocks when you type `human`.
+harmonica at the cat, and unlocks when you type `human`. Afterwards it shows
+which keys got through and takes back what keys can take back.
 
-The mouse and the touchpad stay free. One 280 KB exe, no installer, no
+The mouse and the touchpad stay free. One 450 KB exe, no installer, no
 runtime, no network access, no files written.
 
 ## Use it
 
-Start `catguard.exe`. A shield icon appears in the tray. Its menu has three
-entries: pause, start with Windows, exit.
+Start `catguard.exe`. A cat head appears in the tray: lime eyes while it
+watches, grey while paused. Its menu: last incident, pause, start with
+Windows, exit.
 
 When a paw lands, a small window says so and the keyboard goes dead. Type
 `human` (you do not need to click anything first) or click the button. Keys
@@ -17,12 +21,43 @@ the cat is still standing on stay dead until it lets go.
 
 `Ctrl+Alt+Del` always works. Windows does not let any program intercept it.
 
+## What the cat did
+
+The lock window draws a timeline: one row per key, one bar per press, as long
+as the key was down. Lime bars reached your programs before the lock fell,
+light bars are what you typed in the three seconds before, dark bars were
+blocked. After the unlock the window stays open if anything got through, and
+the tray menu brings it back later.
+
+Below the timeline catguard names what got through. For combinations it knows
+(Alt+F4, Ctrl+W, Win+D, Caps Lock, mute, the touchpad key, about thirty
+in all) it says what they do and, where there is one, how to take it back by
+hand.
+
+The undo button does two things and says which before you click:
+
+- It presses a switch again: Caps Lock, Num Lock, Scroll Lock, Insert, mute,
+  play/pause, Win+D, the colour filter, Narrator, and Ctrl+Win+F24, which is
+  what laptops with a precision touchpad send for the touchpad key. Win+M is
+  answered with Win+Shift+M.
+- It sends Backspace once per typed character, but only if characters were
+  all that arrived, the same window still has the focus, and you have not
+  typed since.
+
+What it cannot do: catguard sees keys, not what a program did with them. A
+closed tab or a deleted file is the program's to restore. And anything the Fn
+key does inside the keyboard never reaches Windows. Fn+Esc (Fn lock) on a
+Lenovo is switched by the keyboard controller. No program can see it, block
+it or reverse it.
+
+The history covers three seconds, lives in memory, and is never written
+anywhere.
+
 ## How it tells a paw from a hand
 
 A finger presses one key. A paw covers two key units and presses everything
-under it in the same instant. catguard looks only at which physical keys are
-down and when they went down. It never sees characters, so the keyboard
-layout does not matter, and there is nothing to log.
+under it in the same instant. The detector looks only at which physical keys
+are down and when they went down, so the keyboard layout does not matter.
 
 | Rule  | Fires when                                                           | Decides after      |
 |-------|----------------------------------------------------------------------|--------------------|
@@ -54,8 +89,13 @@ from reasoning about hands and paws, not yet from recordings of real cats.
 - Windows hides keystrokes that go to an elevated window from a program that
   is not elevated. While an admin window has the focus, catguard sees nothing.
 - A global keyboard hook is also what a keylogger uses, so antivirus software
-  may ask questions about an unsigned build. Read `src/win.rs`: the hook
-  passes scancodes and timestamps to the detector and keeps nothing.
+  may ask questions about an unsigned build. Read `src/win.rs` and
+  `src/history.rs`: the hook keeps the last three seconds of key codes in
+  memory for the timeline and nothing else.
+- Backspace undo counts key-downs. A dead key (`^`, `´` on a German layout)
+  types nothing by itself, so the count can be one too high.
+- Whether your laptop sends Ctrl+Win+F24 for the touchpad key shows in the
+  timeline the first time it happens.
 
 ## Build
 
@@ -63,6 +103,7 @@ from reasoning about hands and paws, not yet from recordings of real cats.
 cargo test                      # the detection core, on any OS
 cargo build --release           # on Windows
 cargo build --release --target x86_64-pc-windows-gnu   # from Linux, needs mingw-w64
+python3 assets/make_icons.py    # regenerate the .ico files, needs Pillow
 ```
 
 ## Layout
@@ -70,8 +111,10 @@ cargo build --release --target x86_64-pc-windows-gnu   # from Linux, needs mingw
 - `src/layout.rs`: where each scancode sits on the board
 - `src/detector.rs`: the four rules
 - `src/guard.rs`: lock state, which events get swallowed, the unlock word
+- `src/history.rs`: the three-second history, known shortcuts, the undo plan
 - `src/sound.rs`: the synthesized harmonica
-- `src/win.rs`: hook thread, tray, lock window
+- `src/win.rs`: hook thread, tray, lock window, timeline, undo
+- `assets/`: icons, cut and drawn by `make_icons.py` from `src/icon-sheet.png`
 
 ## Credit
 

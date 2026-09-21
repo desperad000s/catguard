@@ -4,6 +4,7 @@
 //! its key-down was. Swallowing only one half leaves a key stuck.
 
 use crate::detector::{Detector, Micros, Rule, Thresholds};
+use crate::history::{History, Incident};
 use crate::layout::KeyCode;
 
 /// Typed into the void while locked. Compared against virtual-key codes,
@@ -43,6 +44,7 @@ pub struct Guard {
     swallowed: Vec<KeyCode>,
     typed: Vec<u8>,
     last_sound: Micros,
+    history: History,
 }
 
 impl Guard {
@@ -54,6 +56,7 @@ impl Guard {
             swallowed: Vec::with_capacity(16),
             typed: Vec::with_capacity(UNLOCK_WORD.len()),
             last_sound: 0,
+            history: History::default(),
         }
     }
 
@@ -73,6 +76,7 @@ impl Guard {
         self.passed.clear();
         self.swallowed.clear();
         self.typed.clear();
+        self.history.clear();
     }
 
     /// The unlock button was clicked.
@@ -81,7 +85,22 @@ impl Guard {
         self.typed.clear();
     }
 
+    /// The keys around the last lock, or `None` before the first one.
+    pub fn incident(&self, now: Micros) -> Option<Incident> {
+        self.history.incident(now)
+    }
+
     pub fn key_down(&mut self, key: KeyCode, vk: u8, now: Micros) -> Verdict {
+        let repeat = self.passed.contains(&key) || self.swallowed.contains(&key);
+        let verdict = self.decide_down(key, vk, now);
+        self.history.key_down(key, vk, now, !verdict.swallow, repeat);
+        if !self.locked {
+            self.history.prune(now);
+        }
+        verdict
+    }
+
+    fn decide_down(&mut self, key: KeyCode, vk: u8, now: Micros) -> Verdict {
         if self.passed.contains(&key) {
             // Auto-repeat of a key the applications already know is down.
             return if self.locked { SWALLOW } else { PASS };
@@ -126,8 +145,9 @@ impl Guard {
         Verdict { swallow: true, action: Some(action) }
     }
 
-    pub fn key_up(&mut self, key: KeyCode) -> Verdict {
+    pub fn key_up(&mut self, key: KeyCode, now: Micros) -> Verdict {
         self.detector.key_up(key);
+        self.history.key_up(key, now);
         if let Some(i) = self.passed.iter().position(|&k| k == key) {
             self.passed.swap_remove(i);
             return PASS;
@@ -152,6 +172,7 @@ impl Guard {
         self.locked = true;
         self.typed.clear();
         self.last_sound = now;
+        self.history.mark_lock(rule, now, self.detector.hit_since());
         Verdict { swallow: true, action: Some(Action::Lock(rule)) }
     }
 }
@@ -172,7 +193,7 @@ mod tests {
     }
 
     fn up(g: &mut Guard, c: char) -> Verdict {
-        g.key_up(key_for(c))
+        g.key_up(key_for(c), 0)
     }
 
     fn slam(g: &mut Guard, ms: u64) -> Verdict {
@@ -324,6 +345,18 @@ mod tests {
         assert_eq!(g.poll(330 * MS), None);
         assert_eq!(down(&mut g, 's', 340), SWALLOW);
         assert_eq!(up(&mut g, 's'), PASS);
+    }
+
+    #[test]
+    fn the_incident_knows_what_got_through() {
+        use crate::history::UndoStep;
+        let mut g = guard();
+        assert!(g.incident(0).is_none());
+        slam(&mut g, 1_000);
+        let incident = g.incident(1_100 * MS).unwrap();
+        assert_eq!(incident.rule, Rule::Slam);
+        assert_eq!(incident.paw_since, 1_000 * MS);
+        assert_eq!(incident.undo_plan(), [UndoStep::Backspace(2)]);
     }
 
     #[test]

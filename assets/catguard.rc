@@ -1,0 +1,4 @@
+// The lowest-numbered icon is the one Explorer shows for the exe.
+1 ICON "catguard.ico"
+2 ICON "tray-active.ico"
+3 ICON "tray-paused.ico"
