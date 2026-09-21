@@ -53,6 +53,10 @@ I found no free program that does both, so I wrote one.
 - **Shows what changed on the PC.** Devices that stopped working, the
   touchpad, flight mode, the input language, Sticky and Filter Keys, a rotated
   screen, closed windows. Undo puts back what a program can put back.
+- **Cleans up after Fn keys.** The laptop handles Fn before Windows sees a
+  key, so no program can block Fn+F10. catguard notices what changed while the
+  keyboard was locked, puts the touchpad and the other switches back at the
+  unlock, and lists windows that opened.
 - **Stays small.** One exe under 1 MB. In the background it is a keyboard
   hook and a tray icon. No network access, no telemetry, and the key history
   lives in memory for three seconds.
