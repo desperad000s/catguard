@@ -136,6 +136,13 @@ body[data-mode="locked"] .deck { stroke: var(--lime); }
 .through li { display: grid; grid-template-columns: auto 1fr; gap: 1rem; align-items: baseline; }
 kbd { font: 600 1.1em var(--display); letter-spacing: .04em; background: var(--key); border: 1.5px solid var(--key-edge); border-bottom-width: 3px; border-radius: .45rem; padding: .1em .55em; white-space: nowrap; }
 .undo { background: var(--panel); border-radius: 1.1rem; padding: 1.3rem 1.5rem; display: grid; gap: .9rem; justify-items: start; }
+.changed { margin-top: var(--gap); }
+.changed ul { list-style: none; padding: 0; display: grid; gap: 1rem; margin: .9rem 0; }
+.changed li { display: grid; grid-template-columns: 9.5rem 1fr; gap: 1.2rem; align-items: baseline; }
+.changed li p { max-width: 75ch; }
+.mark { font: 600 1em var(--display); letter-spacing: .04em; color: var(--muted); }
+.mark.fixable { color: var(--accent); }
+.small { font-size: .9em; max-width: 90ch; }
 .empty { margin-top: var(--gap); display: grid; gap: .6rem; }
 
 /* ---- settings */
@@ -394,7 +401,7 @@ function render(s) {
   } else {
     last.append(el("h2", "", "Last lock"), el("p", "muted", "Nothing yet since catguard started. Incidents are kept in memory only and are gone when it exits."));
   }
-  const n = s.incident ? s.incident.leaks.length : 0;
+  const n = s.incident ? s.incident.leaks.length + s.incident.changes.length : 0;
   $("#leak-badge").hidden = n === 0; $("#leak-badge").textContent = n;
 
   renderIncident(s.incident);
@@ -408,8 +415,9 @@ function render(s) {
 }
 
 function leakSentence(incident) {
-  const n = incident.leaks.reduce((sum, l) => sum + l.count, 0);
-  return n === 0 ? "Nothing got through." : `${n} ${n === 1 ? "key press" : "key presses"} got through.`;
+  const n = incident.leaks.reduce((sum, l) => sum + l.count, 0), c = incident.changes.length;
+  const keys = n === 0 ? "No key got through" : `${n} ${n === 1 ? "key press" : "key presses"} got through`;
+  return c === 0 ? keys + "." : `${keys}, and ${c} ${c === 1 ? "thing" : "things"} changed on the PC.`;
 }
 
 function renderIncident(incident) {
@@ -452,6 +460,25 @@ function renderIncident(incident) {
     track0.append(line); rows.style.marginTop = "1.6rem";
   }
 
+  // What is different on the PC, whatever key or Fn combination caused it.
+  const changed = el("div", "changed");
+  changed.append(el("h2", "", incident.changes.length ? "What changed on this PC" : "Nothing changed on this PC"));
+  if (incident.changes.length) {
+    const items = el("ul");
+    for (const change of incident.changes) {
+      const li = el("li"), text = el("div");
+      li.append(el("span", "mark" + (change.undo ? " fixable" : ""), change.undo ? "Undo fixes this" : "Yours to fix"));
+      text.append(el("p", "", change.text + "."));
+      if (change.advice) text.append(el("p", "muted", change.advice));
+      li.append(text); items.append(li);
+    }
+    changed.append(items);
+  }
+  changed.append(el("p", "muted small", !incident.has_baseline
+    ? "catguard had only just started, so it has no picture of the PC from before this lock."
+    : "catguard compares the PC from about a minute before the lock with now: devices, touchpad, flight mode, input language, screen rotation, Sticky, Filter and Toggle Keys, the lock keys and open windows. Something you did yourself in that minute shows up too. What the Fn key does inside the keyboard, Fn lock for example, stays invisible."));
+  body.append(changed);
+
   const through = el("div", "through"), left = el("div"), list = el("ul");
   left.append(el("h2", "", incident.leaks.length ? "What got through" : "Nothing got through"));
   for (const leak of incident.leaks) {
@@ -463,13 +490,13 @@ function renderIncident(incident) {
   const undo = el("div", "undo");
   undo.append(el("h2", "", "Take it back"));
   if (incident.undo.length) {
-    undo.append(el("p", "muted", `catguard switches to “${incident.target}” and will ${incident.undo.join(", then ")}.`));
+    undo.append(el("p", "muted", `catguard will ${incident.undo.join(", then ")}. Keys are typed into “${incident.target}”.`));
     const go = el("button", "primary", incident.undone ? "Done" : "Undo"); go.disabled = !!incident.undone; go.onclick = () => send({ cmd: "undo" });
     undo.append(go);
     if (incident.undo_note) undo.append(el("p", "muted", incident.undo_note));
   } else {
     undo.append(el("p", "muted", incident.leaks.length
-      ? "Keys cannot take this back. catguard sees keys, not what a program did with them, so check the window that had the focus."
+      ? "A program cannot take this back. catguard sees keys and the state of the PC, not what another program did with a key, so check the window that had the focus."
       : "There is nothing to take back."));
   }
   through.append(left, undo); body.append(through);
@@ -506,7 +533,7 @@ else {
   const q = new URLSearchParams(location.search), t0 = 1_000_000;
   const press = (name, down, up, kind, repeats = 0) => ({ name, down: t0 + down * 1000, up: up == null ? null : t0 + up * 1000, kind, repeats });
   render({
-    version: "0.3.1", paused: q.get("mode") === "paused", locked: q.get("mode") === "locked",
+    version: "0.4.0", paused: q.get("mode") === "paused", locked: q.get("mode") === "locked",
     keyboard: { iso: q.get("kb") !== "ansi", laptop: !q.has("desktop") }, links: ["github", "site", "linkedin"],
     key_names: q.get("kb") === "ansi" ? {} : { 41: "^", 12: "ß", 13: "´", 21: "Z", 44: "Y", 26: "Ü", 27: "+", 39: "Ö", 40: "Ä", 43: "#", 86: "<", 53: "-" },
     stats: { locks: 12 },
@@ -515,7 +542,14 @@ else {
       when: "Today 14:32", rule: "slam", target: "Quarterly report.docx - Word", from: t0, until: t0 + 3_400_000, locked_at: t0 + 3_006_000,
       presses: [press("H", 300, 390, "human"), press("I", 520, 610, "human"), press("Caps Lock", 2100, 2260, "cat"), press("W", 3000, 3330, "cat"), press("E", 3003, 3340, "cat"), press("D", 3006, 3345, "blocked"), press("X", 3200, null, "blocked")],
       leaks: [{ name: "Caps Lock", count: 1, note: "switched Caps Lock" }, { name: "W", count: 1, note: null }, { name: "E", count: 1, note: null }],
-      undo: ["press Caps Lock", "remove 2 characters"], undone: false, undo_note: "",
+      changes: q.has("clean") ? [] : [
+        { text: "A device stopped working: HID-compliant touch pad. Windows says its driver is not installed (code 28)", undo: false,
+          advice: "Open Device Manager and choose Action, Scan for hardware changes. If that does not bring it back, run the driver update of your PC's maker, Lenovo Vantage on a Lenovo." },
+        { text: "The input language changed from Deutsch (Deutschland) to English (United States)", advice: null, undo: true },
+        { text: "Caps Lock is on now", advice: null, undo: true },
+      ],
+      has_baseline: true,
+      undo: ["switch the input language back to Deutsch (Deutschland)", "switch Caps Lock off", "remove 2 characters"], undone: false, undo_note: "",
     },
   });
   if (q.get("page")) show(q.get("page"));

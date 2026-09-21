@@ -7,4 +7,5 @@ pub mod guard;
 pub mod history;
 pub mod layout;
 pub mod settings;
+pub mod snapshot;
 pub mod sound;

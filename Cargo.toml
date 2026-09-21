@@ -1,6 +1,6 @@
 [package]
 name = "catguard"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 description = "Locks the keyboard the moment a cat steps on it."
 license = "MIT"
@@ -12,7 +12,9 @@ wry = "0.57"
 [target.'cfg(windows)'.dependencies.windows-sys]
 version = "0.61"
 features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Media_Audio",
@@ -22,6 +24,7 @@ features = [
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    "Win32_UI_Accessibility",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",

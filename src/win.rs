@@ -14,6 +14,7 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
@@ -27,7 +28,10 @@ use catguard::guard::{Action, Guard};
 use catguard::history::{Incident, Mods, UndoStep, LOOKBACK};
 use catguard::layout::{is_printable, EXTENDED};
 use catguard::settings::Settings;
+use catguard::snapshot::{diff, Change, Snapshot};
 use catguard::sound::Sound;
+
+use crate::win_state;
 
 use serde_json::{json, Value};
 use tao::dpi::LogicalSize;
@@ -79,12 +83,17 @@ const ICON_PAUSED: usize = 3;
 
 const POLL_MS: u32 = 25;
 
+const TIMER_SNAPSHOT: usize = 2;
+const SNAPSHOT_EVERY_MS: u32 = 30_000;
+/// Three snapshots half a minute apart: the oldest is 60 to 90 seconds old.
+const SNAPSHOTS_KEPT: usize = 3;
+
 /// The links in the app. They open in the default browser. An empty address
 /// hides the link.
 const LINKS: [(&str, &str); 3] = [
     ("github", "https://github.com/desperad000s/catguard"),
     ("site", "https://webseed.me"),
-    ("linkedin", ""),
+    ("linkedin", "https://www.linkedin.com/in/hendrik-hohnrath-02b390b3"),
 ];
 
 /// What reaches tao's event loop from the hook thread, the window procedure
@@ -143,6 +152,30 @@ fn settings_path() -> PathBuf {
 /// which only happens around a lock. Normal typing never touches this mutex.
 static INCIDENT: Mutex<Option<Incident>> = Mutex::new(None);
 
+/// The state of the PC at regular intervals while nothing is wrong. A cat
+/// rarely gets caught with its first step, so the comparison reaches back
+/// past the three seconds of the key history.
+static BASELINES: Mutex<VecDeque<Snapshot>> = Mutex::new(VecDeque::new());
+/// The oldest baseline at the moment of the last lock.
+static BEFORE: Mutex<Option<Snapshot>> = Mutex::new(None);
+
+/// What is different now from before the last lock.
+unsafe fn changes() -> Vec<Change> {
+    match &*BEFORE.lock().unwrap() {
+        Some(before) => diff(before, &win_state::take()),
+        None => Vec::new(),
+    }
+}
+
+/// The state comparison knows whether a switch really is flipped. Where it
+/// covers a key, the key history's guess is left out, or Undo would press
+/// Caps Lock twice.
+fn covered_by_state(step: &UndoStep) -> bool {
+    const VK_F24: u8 = 0x87;
+    matches!(step, UndoStep::Press(_, vk) if [VK_CAPITAL as u8, VK_NUMLOCK as u8, VK_SCROLL as u8, VK_F24].contains(vk))
+        && BEFORE.lock().unwrap().is_some()
+}
+
 /// What the UI thread noted when the lock fell.
 struct LockInfo {
     /// The window that had the focus. Undo only types into this one.
@@ -185,7 +218,14 @@ struct App {
 }
 
 pub fn run() {
-    let background = std::env::args().any(|arg| arg == "--background");
+    let args: Vec<String> = std::env::args().collect();
+    // For bug reports and for the test under Wine: what catguard reads of the PC.
+    if let Some(i) = args.iter().position(|arg| arg == "--dump-state") {
+        let state = unsafe { win_state::take() };
+        let _ = std::fs::write(args.get(i + 1).map_or("catguard-state.txt", |s| s.as_str()), format!("{state:#?}\n"));
+        return;
+    }
+    let background = args.iter().any(|arg| arg == "--background");
     unsafe {
         CreateMutexW(null(), 0, w!("Local\\catguard-single-instance"));
         if GetLastError() == ERROR_ALREADY_EXISTS {
@@ -207,6 +247,8 @@ pub fn run() {
     unsafe {
         let _ = UI.set(create_native_windows());
         tray(NIM_ADD);
+        BASELINES.lock().unwrap().push_back(win_state::take());
+        SetTimer(UI.get().unwrap().main as HWND, TIMER_SNAPSHOT, SNAPSHOT_EVERY_MS, None);
     }
     std::thread::spawn(hook_thread);
     if !background {
@@ -514,6 +556,7 @@ fn on_ipc(app: &mut App, message: &str) {
 /// Everything the page shows, as one JSON object.
 unsafe fn state_json(with_key_names: bool) -> Value {
     let settings = settings().clone();
+    let changed = changes();
     let info = LOCK_INFO.lock().unwrap();
     let incident = INCIDENT.lock().unwrap().clone().map(|incident| {
         let from = incident.locked_at.saturating_sub(LOOKBACK);
@@ -532,18 +575,22 @@ unsafe fn state_json(with_key_names: bool) -> Value {
             .iter()
             .map(|l| json!({ "name": combo_name(l.mods, l.vk), "count": l.count, "note": l.note }))
             .collect();
-        let undo: Vec<String> = incident
-            .undo_plan()
+        let undo: Vec<String> = changed
             .iter()
-            .map(|step| match step {
+            .filter_map(Change::undo)
+            .chain(incident.undo_plan().iter().filter(|step| !covered_by_state(step)).map(|step| match step {
                 UndoStep::Press(mods, vk) => format!("press {}", combo_name(*mods, *vk)),
                 UndoStep::Backspace(n) => format!("remove {n} characters"),
-            })
+            }))
+            .collect();
+        let changes: Vec<Value> = changed
+            .iter()
+            .map(|c| json!({ "text": c.text(), "advice": c.advice(), "undo": c.undo().is_some() }))
             .collect();
         json!({
             "when": info.when, "rule": rule_name(incident.rule), "target": info.title,
             "from": from, "until": until, "locked_at": incident.locked_at,
-            "presses": presses, "leaks": leaks, "undo": undo, "undone": info.undone, "undo_note": info.undo_note,
+            "presses": presses, "leaks": leaks, "changes": changes, "has_baseline": BEFORE.lock().unwrap().is_some(), "undo": undo, "undone": info.undone, "undo_note": info.undo_note,
         })
     });
     let key_names = with_key_names.then(|| {
@@ -635,7 +682,9 @@ unsafe fn undo() {
     };
     let note = |text: String| LOCK_INFO.lock().unwrap().undo_note = text;
 
+    let reversible: Vec<Change> = changes().into_iter().filter(|c| c.undo().is_some()).collect();
     let mut steps = incident.undo_plan();
+    steps.retain(|step| !covered_by_state(step));
     if TYPED_SINCE_UNLOCK.load(Relaxed) {
         let before = steps.len();
         steps.retain(|step| !matches!(step, UndoStep::Backspace(_)));
@@ -643,17 +692,24 @@ unsafe fn undo() {
             note("You have typed since the unlock, so Backspace would delete your text, not the cat's. It was left out.".into());
         }
     }
-    if steps.is_empty() {
+    if steps.is_empty() && reversible.is_empty() {
         return;
     }
 
-    // Undo types into the window the cat typed into, never into whatever
-    // happens to have the focus. catguard is in the foreground right now, so
-    // Windows lets it hand the focus over.
+    // Keys go to the window the cat typed into, never to whatever happens to
+    // have the focus. catguard is in the foreground right now, so Windows
+    // lets it hand the focus over.
     SetForegroundWindow(target as HWND);
     std::thread::sleep(Duration::from_millis(200));
-    if target == 0 || GetForegroundWindow() as isize != target {
-        return note(format!("\u{201c}{title}\u{201d} is gone or does not take the focus, so nothing was typed."));
+    let focused = target != 0 && GetForegroundWindow() as isize == target;
+
+    // Switches and settings do not depend on which window has the focus.
+    if let Some(before) = &*BEFORE.lock().unwrap() {
+        win_state::restore(before, &reversible, if focused { target as HWND } else { GetForegroundWindow() });
+    }
+    if !steps.is_empty() && !focused {
+        note(format!("\u{201c}{title}\u{201d} is gone or does not take the focus, so no keys were typed into it."));
+        steps.clear();
     }
 
     let mut keys: Vec<(u16, bool)> = Vec::new(); // (virtual key, down)
@@ -672,17 +728,7 @@ unsafe fn undo() {
             }
         }
     }
-    // The hook ignores injected input, so these keys pass the guard.
-    let inputs: Vec<INPUT> = keys
-        .into_iter()
-        .map(|(vk, down)| INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 {
-                ki: KEYBDINPUT { wVk: vk, wScan: 0, dwFlags: if down { 0 } else { KEYEVENTF_KEYUP }, time: 0, dwExtraInfo: 0 },
-            },
-        })
-        .collect();
-    SendInput(inputs.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32);
+    win_state::send_keys(&keys);
     LOCK_INFO.lock().unwrap().undone = true;
 }
 
@@ -718,6 +764,22 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lpa
                 notify(UserEvent::Push);
             }
             0
+        }
+        WM_TIMER if wparam == TIMER_SNAPSHOT => {
+            // Not while locked: that state is the cat's, not a baseline.
+            if !LOCKED.load(Relaxed) && !PAUSED.load(Relaxed) {
+                let mut baselines = BASELINES.lock().unwrap();
+                if baselines.len() == SNAPSHOTS_KEPT {
+                    baselines.pop_front();
+                }
+                baselines.push_back(win_state::take());
+            }
+            0
+        }
+        // 7 = DBT_DEVNODES_CHANGED: a device came, went or changed.
+        WM_DEVICECHANGE if wparam == 7 => {
+            win_state::DEVICES_DIRTY.store(true, Relaxed);
+            1
         }
         WM_OPEN => {
             notify(UserEvent::Open(None));
@@ -866,6 +928,7 @@ unsafe fn on_lock(ui: &Ui, rule: isize) {
         undo_note: String::new(),
     };
 
+    *BEFORE.lock().unwrap() = BASELINES.lock().unwrap().front().cloned();
     LOCKED.store(true, Relaxed);
     TYPED_SINCE_UNLOCK.store(false, Relaxed);
     change_settings(|s| s.locks += 1);
@@ -880,7 +943,7 @@ unsafe fn on_unlock(ui: &Ui) {
     TYPED_SINCE_UNLOCK.store(false, Relaxed);
     ShowWindow(ui.lock as HWND, SW_HIDE);
     let leaked = INCIDENT.lock().unwrap().as_ref().is_some_and(|i| !i.leaks().is_empty());
-    if leaked {
+    if leaked || !changes().is_empty() {
         notify(UserEvent::Open(Some("incident")));
     }
 }

@@ -2,6 +2,8 @@
 
 #[cfg(windows)]
 mod win;
+#[cfg(windows)]
+mod win_state;
 
 fn main() {
     #[cfg(windows)]

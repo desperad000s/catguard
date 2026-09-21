@@ -80,6 +80,32 @@ it or reverse it.
 The history covers three seconds, lives in memory, and is never written
 anywhere.
 
+### What changed on the PC
+
+Keys are half the story. A dead touchpad can come from Fn+F10, which Windows
+never sees, or from a driver that went missing, which no key explains. So
+catguard also takes a small picture of the PC every thirty seconds and, after
+a lock, compares the picture from about a minute earlier with now:
+
+- devices that are gone, new, or stopped working, with Device Manager's
+  problem code (22 disabled, 28 no driver)
+- touchpad on or off, flight mode
+- the input language
+- screen rotation
+- Sticky Keys, Filter Keys and Toggle Keys, which long presses on Shift and
+  Num Lock switch on
+- Caps Lock, Num Lock, Scroll Lock
+- windows that closed
+
+Undo puts back what a program can put back: the lock keys, the three
+accessibility features, the input language, the rotation, and it presses the
+touchpad key again. For the rest the page says what to do by hand. Something
+you did yourself in that minute shows up too. What Fn does inside the
+keyboard, Fn lock for example, stays invisible to every program.
+
+`catguard.exe --dump-state file.txt` writes what catguard reads of the PC,
+for bug reports.
+
 ## How it tells a paw from a hand
 
 A finger presses one key. A paw covers two key units and presses everything
@@ -132,7 +158,7 @@ from reasoning about hands and paws, not yet from recordings of real cats.
 cargo test                      # the detection core, on any OS
 cargo build --release           # on Windows, MSVC toolchain
 cargo xwin build --release --target x86_64-pc-windows-msvc   # from Linux
-makensis -DVERSION=0.3.1 installer/catguard.nsi                # the setup
+makensis -DVERSION=0.4.0 installer/catguard.nsi                # the setup
 python3 assets/make_icons.py    # all icons from one drawing; rsvg-convert, Pillow
 tests/wine-smoke.sh             # the real exe under Wine: lock, swallow, unlock
 ```
@@ -169,8 +195,10 @@ not remove the warning. It is unsigned too, and the same rules apply to it.
 - `src/guard.rs`: lock state, which events get swallowed, the unlock word
 - `src/history.rs`: the three-second history, known shortcuts, the undo plan
 - `src/sound.rs`: the synthesized harmonica
+- `src/snapshot.rs`: comparing the PC before and after a lock
 - `src/settings.rs`: the settings file and its sanitizing
 - `src/win.rs`: hook thread, tray, lock window, the app window and its messages
+- `src/win_state.rs`: reading the PC's state from Windows and putting it back
 - `ui/index.html`: the app, one file, no build step
 - `assets/`: every icon, rendered by `make_icons.py` from one vector drawing
 - `installer/catguard.nsi`: the per-user setup

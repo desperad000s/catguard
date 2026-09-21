@@ -50,4 +50,8 @@ lock_visible && fail "the unlock word did not unlock"
 # which makes this the test of the message that says so.
 sleep 1.5; import -window root "$out/2-unlocked.png"
 
+# The state reader behind "What changed on this PC" must see the open window.
+wine "$exe" --dump-state "$out/state.txt" 2>/dev/null
+grep -q "Notepad" "$out/state.txt" || fail "the state snapshot does not list the Notepad window"
+
 echo "PASS. Look at $out/1-locked.png and $out/2-unlocked.png: Notepad must read 'hiwe', nothing of 'zzz' or 'human'."
