@@ -1,24 +1,95 @@
-<img src="assets/logo.png" width="128" alt="catguard">
+<p align="center">
+  <img src="assets/logo.png" width="148" alt="The catguard logo: a cat looking over a keyboard">
+</p>
 
-# catguard
+<h1 align="center">catguard</h1>
 
-Locks the keyboard when a cat steps on it. Runs in the Windows tray, plays a
-harmonica at the cat, and unlocks when you type `human`. Afterwards it shows
-which keys got through and takes back what keys can take back.
+<p align="center">
+  Locks the keyboard the moment a cat steps on it.<br>
+  Then shows what the cat did, and takes back what a program can take back.
+</p>
 
-The mouse and the touchpad stay free. One exe under 1 MB, no installer, no
-network access. The only file it writes is its settings.
+<p align="center">
+  <a href="https://github.com/desperad000s/catguard/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/desperad000s/catguard?color=c8f03c&labelColor=05070a"></a>
+  <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-c8f03c?labelColor=05070a">
+  <img alt="Written in Rust" src="https://img.shields.io/badge/Rust-one%20exe%2C%20under%201%20MB-c8f03c?labelColor=05070a">
+  <a href="LICENSE"><img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-c8f03c?labelColor=05070a"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/desperad000s/catguard/releases/latest"><b>Download for Windows</b></a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="#how-it-tells-a-paw-from-a-hand">How it works</a>
+  &nbsp;&nbsp;·&nbsp;&nbsp;
+  <a href="#build">Build it yourself</a>
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/watch.png" alt="The Watch page: a cat looks over a keyboard whose keys light up as you press them" width="880">
+</p>
+
+## Why this exists
+
+My cat jumped on my laptop and the touchpad was dead afterwards. I assumed she
+had hit Fn+F10. She had not: a driver had gone missing, and it took a driver
+scan from the manufacturer to find out. Locking the keyboard is the easy
+half. The half I wanted is the answer to "what did she just do?".
+
+The one program that does the locking, PawSense, dates from 1999, costs money
+and is closed. catguard is free, open, and written from scratch.
+
+## What it does
+
+- **Locks at once.** Three keys under one paw lock the keyboard on the third
+  key. A sitting cat and a paw on a laptop keyboard are caught too. Ordinary
+  typing, however fast, is not.
+- **Leaves the mouse alone.** Only the keyboard locks.
+- **Unlocks for humans.** Type `human` blind, or click the button. The word
+  is yours to change.
+- **Makes a noise cats dislike.** A harmonica, a hiss, a burst of compressed
+  air or a high tone. All four are synthesized, none is a recording.
+- **Shows what the cat did.** A timeline of every key around the lock: how
+  long it was down, and whether it reached your programs.
+- **Shows what changed on the PC.** Devices that stopped working, the
+  touchpad, flight mode, the input language, Sticky and Filter Keys, a rotated
+  screen, closed windows. With an Undo for what a program can put back.
+- **Stays small.** One exe under 1 MB. In the background it is a keyboard
+  hook and a tray icon. No network access, no telemetry, and the key history
+  lives in memory for three seconds.
+
+<table>
+  <tr>
+    <td width="50%"><img src="assets/screenshots/incident.png" alt="The Incident page with the key timeline, the list of what changed on the PC, and Undo"></td>
+    <td width="50%"><img src="assets/screenshots/locked.png" alt="The Watch page while the keyboard is locked"><br><br><img src="assets/screenshots/settings-light.png" alt="The Settings page in the light theme"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>What the cat did, what changed, and Undo</sub></td>
+    <td align="center"><sub>Locked, and the settings in the light theme</sub></td>
+  </tr>
+</table>
+
+## Install
+
+1. Download `catguard-setup-x.y.z.exe` from the
+   [latest release](https://github.com/desperad000s/catguard/releases/latest).
+2. Run it. It installs for your Windows account only, without administrator
+   rights, adds a Start menu entry and an uninstaller, and starts catguard in
+   the tray when you sign in.
+
+`catguard.exe` from the same release runs on its own, without installing.
+
+**Windows and your browser will warn you.** The files are not code-signed
+yet, so SmartScreen says "unknown publisher" and Chrome may hold the download
+back. That is what happens to every new unsigned program, and [Signing](#signing)
+says what it takes to change. Until then, compare the SHA-256 on the release
+page with your download, then choose "More info" and "Run anyway".
 
 ## Use it
 
-Run `catguard-setup-x.y.z.exe`. It installs for your Windows account only
-(no administrator rights), adds a Start menu entry and an uninstaller, and
-starts catguard in the tray when you sign in. `catguard.exe` also runs on its
-own without being installed.
-
-A round cat icon appears in the tray: a lime ring while
-it watches, a grey one while it is paused. A left click opens the app, a
-right click has pause and exit.
+A round cat icon sits in the tray: a lime ring while it watches, a grey one
+while it is paused. A left click opens the app, a right click has pause and
+exit. Closing the app window does not stop catguard. It keeps watching from
+the tray.
 
 When a paw lands, a black window says so and the keyboard goes dead. Type
 `human` (you do not need to click anything first) or click the button. Keys
@@ -28,23 +99,21 @@ the cat is still standing on stay dead until it lets go.
 
 The app has three pages:
 
-- **Watch** shows whether catguard is on, and a keyboard whose keys light up
-  as you press them, so you can try a flat hand and see what catguard sees.
+- **Watch** shows whether catguard is on, and your own keyboard: the keycaps
+  follow your layout, and keys light up as you press them, so you can try a
+  flat hand and see what catguard sees. A button locks the keyboard by hand,
+  for wiping it.
 - **Incident** shows the last lock: see the next section.
 - **Settings**: sensitivity (relaxed for gamers, normal, kitten), the sound,
   the unlock word, start with Windows, dark or light.
 
-Watch also has a button that locks the keyboard by hand, for wiping it.
+The four sounds: the harmonica PawSense has used since 1999, a cat's hiss,
+two bursts like a can of compressed air, and a tone at 15 to 17 kHz that most
+adults barely hear. None is proven for every cat. Pick the one yours dislikes.
 
-There are four sounds, all synthesized: the harmonica PawSense has used since
-1999, a cat's hiss, two bursts like a can of compressed air, and a tone at 15
-to 17 kHz that most adults barely hear. None is proven for every cat. Pick
-the one yours dislikes.
-
-The app window is a WebView2 page that exists only while it is open. Closed,
-catguard is the keyboard hook and a tray icon. WebView2 is part of Windows 11
-and of current Windows 10. Without it the guard still works and only the
-window is missing.
+The app window is a WebView2 page that exists only while it is open. WebView2
+is part of Windows 11 and of current Windows 10. Without it the guard still
+works and only the window is missing.
 
 ## What the cat did
 
@@ -194,7 +263,7 @@ not remove the warning. It is unsigned too, and the same rules apply to it.
 - `src/detector.rs`: the four rules
 - `src/guard.rs`: lock state, which events get swallowed, the unlock word
 - `src/history.rs`: the three-second history, known shortcuts, the undo plan
-- `src/sound.rs`: the synthesized harmonica
+- `src/sound.rs`: the four synthesized sounds
 - `src/snapshot.rs`: comparing the PC before and after a lock
 - `src/settings.rs`: the settings file and its sanitizing
 - `src/win.rs`: hook thread, tray, lock window, the app window and its messages
@@ -208,4 +277,29 @@ not remove the warning. It is unsigned too, and the same rules apply to it.
 
 The idea is PawSense by Chris Niswander (BitBoost, 1999). catguard shares no
 code with it. The rule set started from the description in
-[joeyvigil/pawsense](https://github.com/joeyvigil/pawsense) (MIT).
+[joeyvigil/pawsense](https://github.com/joeyvigil/pawsense) (MIT). The app is
+set in [Barlow Condensed](https://github.com/jpt/barlow) (SIL Open Font
+License).
+
+## Who made this
+
+<table>
+  <tr>
+    <td width="96"><img src="assets/logo.png" width="80" alt=""></td>
+    <td>
+      <b>Hendrik Hohnrath</b>, <a href="https://webseed.me">webseed OÜ</a><br>
+      I build websites and the tools around them. catguard is what happens when the cat wins once too often.<br><br>
+      <a href="https://webseed.me">webseed.me</a>
+      &nbsp;·&nbsp;
+      <a href="https://www.linkedin.com/in/hendrik-hohnrath-02b390b3">LinkedIn</a>
+      &nbsp;·&nbsp;
+      <a href="https://github.com/desperad000s">GitHub</a>
+    </td>
+  </tr>
+</table>
+
+Found a bug, or does your cat beat the detector? Open an
+[issue](https://github.com/desperad000s/catguard/issues) and attach the output
+of `catguard.exe --dump-state state.txt` if the PC's state is involved.
+
+MIT licensed. See [LICENSE](LICENSE).
