@@ -18,9 +18,9 @@
 
 <p align="center">
   <a href="https://github.com/desperad000s/catguard/releases/latest"><b>Download for Windows</b></a>
-  &nbsp;&nbsp;·&nbsp;&nbsp;
+  &nbsp;&nbsp;&nbsp;&nbsp;
   <a href="#how-it-tells-a-paw-from-a-hand">How it works</a>
-  &nbsp;&nbsp;·&nbsp;&nbsp;
+  &nbsp;&nbsp;&nbsp;&nbsp;
   <a href="#build">Build it yourself</a>
 </p>
 
@@ -31,28 +31,27 @@
 ## Why this exists
 
 My cat jumped on my laptop and the touchpad was dead afterwards. I assumed she
-had hit Fn+F10. She had not: a driver had gone missing, and it took a driver
-scan from the manufacturer to find out. Locking the keyboard is the easy
-half. The half I wanted is the answer to "what did she just do?".
+had hit Fn+F10. She had not. A driver had gone missing, and I only found out
+after a driver scan from the manufacturer. Locking the keyboard is the easy
+half. The half I wanted is the answer to "what did she do?".
 
-The one program that does the locking, PawSense, dates from 1999, costs money
-and is closed. catguard is free, open, and written from scratch.
+I found no free program that does both, so I wrote one.
 
 ## What it does
 
 - **Locks at once.** Three keys under one paw lock the keyboard on the third
-  key. A sitting cat and a paw on a laptop keyboard are caught too. Ordinary
-  typing, however fast, is not.
+  key. catguard also catches a cat that lies down on the keys, and a paw on a
+  laptop keyboard that only reports two keys. Fast typing does not set it off.
 - **Leaves the mouse alone.** Only the keyboard locks.
 - **Unlocks for humans.** Type `human` blind, or click the button. The word
   is yours to change.
 - **Makes a noise cats dislike.** A harmonica, a hiss, a burst of compressed
   air or a high tone. All four are synthesized, none is a recording.
-- **Shows what the cat did.** A timeline of every key around the lock: how
+- **Shows what the cat did.** A timeline has every key around the lock, how
   long it was down, and whether it reached your programs.
 - **Shows what changed on the PC.** Devices that stopped working, the
   touchpad, flight mode, the input language, Sticky and Filter Keys, a rotated
-  screen, closed windows. With an Undo for what a program can put back.
+  screen, closed windows. Undo puts back what a program can put back.
 - **Stays small.** One exe under 1 MB. In the background it is a keyboard
   hook and a tray icon. No network access, no telemetry, and the key history
   lives in memory for three seconds.
@@ -78,17 +77,17 @@ and is closed. catguard is free, open, and written from scratch.
 
 `catguard.exe` from the same release runs on its own, without installing.
 
-**Windows and your browser will warn you.** The files are not code-signed
+**Windows and your browser will warn you.** I have not code-signed the files
 yet, so SmartScreen says "unknown publisher" and Chrome may hold the download
-back. That is what happens to every new unsigned program, and [Signing](#signing)
-says what it takes to change. Until then, compare the SHA-256 on the release
-page with your download, then choose "More info" and "Run anyway".
+back. Every new unsigned program gets this, and [Signing](#signing) says what
+it takes to change. Until then, compare the SHA-256 on the release page with
+your download, then choose "More info" and "Run anyway".
 
 ## Use it
 
-A round cat icon sits in the tray: a lime ring while it watches, a grey one
-while it is paused. A left click opens the app, a right click has pause and
-exit. Closing the app window does not stop catguard. It keeps watching from
+The tray icon is a cat in a ring. The ring is lime while catguard watches and
+grey while it is paused. A left click opens the app, a right click has pause
+and exit. Closing the app window does not stop catguard. It keeps watching from
 the tray.
 
 When a paw lands, a black window says so and the keyboard goes dead. Type
@@ -99,17 +98,18 @@ the cat is still standing on stay dead until it lets go.
 
 The app has three pages:
 
-- **Watch** shows whether catguard is on, and your own keyboard: the keycaps
+- **Watch** shows whether catguard is on, and your own keyboard. The keycaps
   follow your layout, and keys light up as you press them, so you can try a
   flat hand and see what catguard sees. A button locks the keyboard by hand,
   for wiping it.
-- **Incident** shows the last lock: see the next section.
+- **Incident** shows the last lock. The next section describes it.
 - **Settings**: sensitivity (relaxed for gamers, normal, kitten), the sound,
   the unlock word, start with Windows, dark or light.
 
-The four sounds: the harmonica PawSense has used since 1999, a cat's hiss,
-two bursts like a can of compressed air, and a tone at 15 to 17 kHz that most
-adults barely hear. None is proven for every cat. Pick the one yours dislikes.
+There are four sounds. A harmonica, a cat's hiss, two bursts like a can of
+compressed air, and a tone at 15 to 17 kHz that most adults barely hear. I
+know of no proof that any of them works on every cat, so pick the one yours
+dislikes.
 
 The app window is a WebView2 page that exists only while it is open. WebView2
 is part of Windows 11 and of current Windows 10. Without it the guard still
@@ -140,7 +140,7 @@ The undo button does two things and says which before you click:
 Undo first hands the focus back to the window the cat typed into, and types
 nothing if that window is gone.
 
-What it cannot do: catguard sees keys, not what a program did with them. A
+catguard sees keys, not what a program did with them. A
 closed tab or a deleted file is the program's to restore. And anything the Fn
 key does inside the keyboard never reaches Windows. Fn+Esc (Fn lock) on a
 Lenovo is switched by the keyboard controller. No program can see it, block
@@ -188,16 +188,16 @@ are down and when they went down, so the keyboard layout does not matter.
 | Pair  | 2 neighbours go down within 30 ms and both stay down                 | 250 ms             |
 | Sit   | 3 keys are held for 2 s                                              | 2 s                |
 
-Why Slam can be instant: any three keys that fit under a paw across two rows
-include two keys of the same finger column, and one finger needs about 100 ms
+Slam can decide at once because any three keys that fit under a paw across
+two rows include two keys of the same finger column, and one finger needs about 100 ms
 to get from one key to the next. No typist produces that pattern in 60 ms.
 
-Why Pair exists: many laptop keyboards cannot report a third key inside the
+Pair exists because many laptop keyboards cannot report a third key inside the
 same block of their matrix. On those a paw looks like two keys, and two keys
 are only suspicious once they stay down longer than typing ever holds them.
 
-Shift, Ctrl, Alt and Win never count. Injected input (macros, on-screen
-keyboard, remote desktop) is ignored.
+Shift, Ctrl, Alt and Win never count. catguard ignores input that software
+injects, such as macros, the on-screen keyboard and remote desktop.
 
 The thresholds live in `Thresholds::default()` in `src/detector.rs`. They come
 from reasoning about hands and paws, not yet from recordings of real cats.
@@ -206,8 +206,9 @@ from reasoning about hands and paws, not yet from recordings of real cats.
 
 - The keys that arrive before a rule fires reach the application: two
   characters for Slam, two held keys for 250 ms for Pair.
-- Games: holding two neighbouring keys that you pressed in the same 30 ms
-  (W+A) looks like a paw. Use Pause in the tray menu.
+- In games, two neighbouring keys that you press in the same 30 ms and hold,
+  W+A for example, look like a paw. Set the sensitivity to Relaxed or use
+  Pause in the tray menu.
 - Windows hides keystrokes that go to an elevated window from a program that
   is not elevated. While an admin window has the focus, catguard sees nothing.
 - The exe is not code-signed, so browsers and SmartScreen warn about an
@@ -253,7 +254,7 @@ signed file. The realistic routes for this project:
 - Azure Artifact Signing, about 10 USD a month, is open to companies in the
   EU and to individuals in the USA and Canada.
 
-Until then: the exe and the setup carry version information naming webseed
+Until then the exe and the setup carry version information naming webseed
 OÜ, and the download page should publish their SHA-256. An installer does
 not remove the warning. It is unsigned too, and the same rules apply to it.
 
@@ -275,8 +276,8 @@ not remove the warning. It is unsigned too, and the same rules apply to it.
 
 ## Credit
 
-The idea is PawSense by Chris Niswander (BitBoost, 1999). catguard shares no
-code with it. The rule set started from the description in
+The idea comes from PawSense by Chris Niswander (BitBoost, 1999). catguard
+shares no code with it. The rule set started from the description in
 [joeyvigil/pawsense](https://github.com/joeyvigil/pawsense) (MIT). The app is
 set in [Barlow Condensed](https://github.com/jpt/barlow) (SIL Open Font
 License).
@@ -290,9 +291,9 @@ License).
       <b>Hendrik Hohnrath</b>, <a href="https://webseed.me">webseed OÜ</a><br>
       I build websites and the tools around them. catguard is what happens when the cat wins once too often.<br><br>
       <a href="https://webseed.me">webseed.me</a>
-      &nbsp;·&nbsp;
+      &nbsp;&nbsp;&nbsp;
       <a href="https://www.linkedin.com/in/hendrik-hohnrath-02b390b3">LinkedIn</a>
-      &nbsp;·&nbsp;
+      &nbsp;&nbsp;&nbsp;
       <a href="https://github.com/desperad000s">GitHub</a>
     </td>
   </tr>

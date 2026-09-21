@@ -708,7 +708,7 @@ unsafe fn undo() {
         win_state::restore(before, &reversible, if focused { target as HWND } else { GetForegroundWindow() });
     }
     if !steps.is_empty() && !focused {
-        note(format!("\u{201c}{title}\u{201d} is gone or does not take the focus, so no keys were typed into it."));
+        note(format!("\"{title}\" is gone or does not take the focus, so no keys were typed into it."));
         steps.clear();
     }
 

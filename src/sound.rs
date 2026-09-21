@@ -1,9 +1,9 @@
 //! The deterrents, synthesized so that the project ships no recordings.
 //!
-//! None of these is proven to work on every cat. They are the sounds that
-//! deterrents commonly use: PawSense plays a harmonica, a hiss is the cat's
-//! own warning, compressed-air cans hiss at the cat, and ultrasonic devices
-//! use tones at the top of human hearing.
+//! None of these is proven to work on every cat. They are sounds that cat
+//! deterrents use. A hiss is the cat's own warning, compressed-air cans hiss
+//! at the cat, and ultrasonic devices use tones at the top of human hearing.
+//! The harmonica is the oldest of them on a computer.
 
 use std::f32::consts::TAU;
 

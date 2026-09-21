@@ -365,7 +365,7 @@ const SENSITIVITY = {
   kitten: "Small paws and light steps. Reacts sooner, and a clumsy hand can set it off.",
 };
 const SOUNDS = {
-  harmonica: "The harmonica is what PawSense has played since 1999.",
+  harmonica: "The harmonica plays two chords, one blown and one drawn.",
   hiss: "The hiss is a cat's own warning.",
   spray: "The spray is two bursts like a can of compressed air.",
   whistle: "The high tone sits at 15 to 17 kHz. Most adults barely hear it, cats do. Small speakers play it quietly.",
@@ -427,7 +427,7 @@ function renderIncident(incident) {
     empty.append(el("p", "muted", "No incident yet. When the keyboard locks, this page shows every key around that moment: how long it was down, and whether it reached your programs."));
     return body.append(empty);
   }
-  body.append(el("p", "muted", `${incident.when}, locked because of ${RULES[incident.rule]}. Focus was in “${incident.target || "no window"}”.`));
+  body.append(el("p", "muted", `${incident.when}, locked because of ${RULES[incident.rule]}. Focus was in "${incident.target || "no window"}".`));
 
   const tl = el("div", "timeline"), rows = el("div", "rows");
   const span = incident.until - incident.from, pct = (t) => (Math.min(Math.max(t, incident.from), incident.until) - incident.from) / span * 100;
@@ -490,7 +490,7 @@ function renderIncident(incident) {
   const undo = el("div", "undo");
   undo.append(el("h2", "", "Take it back"));
   if (incident.undo.length) {
-    undo.append(el("p", "muted", `catguard will ${incident.undo.join(", then ")}. Keys are typed into “${incident.target}”.`));
+    undo.append(el("p", "muted", `catguard will ${incident.undo.join(", then ")}. Keys are typed into "${incident.target}".`));
     const go = el("button", "primary", incident.undone ? "Done" : "Undo"); go.disabled = !!incident.undone; go.onclick = () => send({ cmd: "undo" });
     undo.append(go);
     if (incident.undo_note) undo.append(el("p", "muted", incident.undo_note));

@@ -139,7 +139,7 @@ impl Change {
             Change::Rotation { .. } => "The screen got rotated".into(),
             Change::Touchpad { on } => format!("The touchpad got switched {}", on_off(*on)),
             Change::FlightMode { on } => format!("Flight mode got switched {}", on_off(*on)),
-            Change::WindowClosed { title } => format!("A window closed: \u{201c}{title}\u{201d}"),
+            Change::WindowClosed { title } => format!("A window closed: \"{title}\""),
             Change::DeviceGone { name } => format!("A device is gone: {name}"),
             Change::DeviceBroken { name, problem } => {
                 let why = match problem {
