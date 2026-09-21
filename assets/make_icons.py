@@ -4,10 +4,9 @@ window and the app all show the same cat.
 Run from the repo root: python3 assets/make_icons.py [contact-sheet.png]
 Needs rsvg-convert and Pillow.
 
-The mark is the cat from variation 08 of assets/src/icon-sheet.png, redrawn
-as vectors with the same head the app draws in ui/index.html. The sheet's
-bitmap does not survive 16 pixels, and cutting different sizes from different
-places is how the exe ended up with three different logos.
+The mark is drawn as vectors, with the same head the app draws in
+ui/index.html. One drawing for every size: cutting different sizes from
+different artwork is how the exe once ended up with three different logos.
 """
 import io
 import subprocess
