@@ -44,6 +44,7 @@ use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 use windows_sys::Win32::Graphics::Gdi::*;
 use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 use windows_sys::Win32::System::Registry::*;
 use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 use windows_sys::Win32::System::Threading::{
@@ -77,6 +78,14 @@ const ICON_ACTIVE: usize = 2;
 const ICON_PAUSED: usize = 3;
 
 const POLL_MS: u32 = 25;
+
+/// The links in the app. They open in the default browser. An empty address
+/// hides the link.
+const LINKS: [(&str, &str); 3] = [
+    ("github", "https://github.com/desperad000s/catguard"),
+    ("site", "https://webseed.me"),
+    ("linkedin", ""),
+];
 
 /// What reaches tao's event loop from the hook thread, the window procedure
 /// and the web page.
@@ -470,6 +479,12 @@ fn on_ipc(app: &mut App, message: &str) {
         }
         "pause" => unsafe { set_paused(value.as_bool().unwrap_or(false)) },
         "test_sound" => unsafe { play(Some(serde_json::from_value(value.clone()).unwrap_or_default())) },
+        "open" => unsafe {
+            // Only the addresses compiled in, never one the page hands over.
+            if let Some((_, url)) = LINKS.iter().find(|(name, url)| Some(*name) == value.as_str() && !url.is_empty()) {
+                ShellExecuteW(null_mut(), w!("open"), wide(url).as_ptr(), null(), null(), SW_SHOWNORMAL);
+            }
+        },
         "lock_now" => unsafe {
             PostThreadMessageW(HOOK_THREAD.load(Relaxed), WM_LOCK_NOW, 0, 0);
         },
@@ -509,7 +524,7 @@ unsafe fn state_json(with_key_names: bool) -> Value {
             .filter(|p| p.up.unwrap_or(until) >= from)
             .map(|p| {
                 let kind = if !p.passed { "blocked" } else if incident.during_paw(p) { "cat" } else { "human" };
-                json!({ "name": key_name(u32::from(p.key & 0xFF), p.key & EXTENDED != 0), "down": p.down, "up": p.up, "kind": kind, "repeats": p.repeats })
+                json!({ "name": key_label(p.key), "down": p.down, "up": p.up, "kind": kind, "repeats": p.repeats })
             })
             .collect();
         let leaks: Vec<Value> = incident
@@ -534,7 +549,7 @@ unsafe fn state_json(with_key_names: bool) -> Value {
     let key_names = with_key_names.then(|| {
         let names: serde_json::Map<String, Value> = (0u16..0x60)
             .filter(|&code| is_printable(code) && code != 0x39)
-            .map(|code| (code.to_string(), Value::from(key_name(u32::from(code), false))))
+            .map(|code| (code.to_string(), Value::from(key_label(code))))
             .collect();
         Value::Object(names)
     });
@@ -543,6 +558,8 @@ unsafe fn state_json(with_key_names: bool) -> Value {
         "paused": PAUSED.load(Relaxed),
         "locked": LOCKED.load(Relaxed),
         "key_names": key_names,
+        "keyboard": { "iso": keyboard_is_iso(), "laptop": has_battery() },
+        "links": LINKS.iter().filter(|(_, url)| !url.is_empty()).map(|(name, _)| *name).collect::<Vec<_>>(),
         "stats": { "locks": settings.locks },
         "settings": {
             "sensitivity": settings.sensitivity, "sound": settings.sound, "sound_kind": settings.sound_kind, "word": settings.word,
@@ -560,6 +577,34 @@ fn rule_name(rule: Rule) -> &'static str {
         Rule::Sit => "sit",
         Rule::Manual => "manual",
     }
+}
+
+/// What is printed on a key: the character for keys that type one, the name
+/// Windows has for the others. Dead keys count as characters here. Their
+/// names ("ZIRKUMFLEX", "AKUT") are not what the keycap shows.
+unsafe fn key_label(key: u16) -> String {
+    if is_printable(key) {
+        let vk = MapVirtualKeyW(u32::from(key), MAPVK_VSC_TO_VK);
+        // The top bit marks a dead key, the rest is the character.
+        let character = MapVirtualKeyW(vk, MAPVK_VK_TO_CHAR) & 0x7FFF_FFFF;
+        if let Some(c) = char::from_u32(character).filter(|c| !c.is_control() && *c != ' ') {
+            return c.to_string();
+        }
+    }
+    key_name(u32::from(key & 0xFF), key & EXTENDED != 0)
+}
+
+/// Windows does not know the shape of the keyboard. The layout language is
+/// the best hint: US English keyboards are ANSI, nearly all others are ISO,
+/// with the tall Enter and the extra key beside the left Shift.
+unsafe fn keyboard_is_iso() -> bool {
+    GetKeyboardLayout(0) as usize & 0xFFFF != 0x0409
+}
+
+/// A machine with a battery is a laptop, and laptops have an Fn key.
+unsafe fn has_battery() -> bool {
+    let mut status: SYSTEM_POWER_STATUS = zeroed();
+    GetSystemPowerStatus(&mut status) != 0 && status.BatteryFlag & 128 == 0 && status.BatteryFlag != 255
 }
 
 /// The name Windows has for a key in the current keyboard language.

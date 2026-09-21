@@ -1,5 +1,5 @@
 ; Per-user installer for catguard. No administrator rights, no UAC prompt.
-; Build from the repo root:  makensis -DVERSION=0.3.0 installer/catguard.nsi
+; Build from the repo root:  makensis -DVERSION=0.3.1 installer/catguard.nsi
 
 Unicode true
 !include "MUI2.nsh"
@@ -19,8 +19,8 @@ SetCompressor /SOLID lzma
 
 VIProductVersion "${VERSION}.0"
 VIAddVersionKey "ProductName" "catguard"
-VIAddVersionKey "CompanyName" "WEBSEED OÜ"
-VIAddVersionKey "LegalCopyright" "© 2026 WEBSEED OÜ. MIT License."
+VIAddVersionKey "CompanyName" "webseed OÜ"
+VIAddVersionKey "LegalCopyright" "© 2026 webseed OÜ. MIT License."
 VIAddVersionKey "FileDescription" "catguard setup"
 VIAddVersionKey "FileVersion" "${VERSION}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
@@ -55,7 +55,7 @@ Section "catguard"
 
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "catguard"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "WEBSEED OÜ"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "webseed OÜ"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\catguard.exe"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'

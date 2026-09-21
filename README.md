@@ -132,7 +132,7 @@ from reasoning about hands and paws, not yet from recordings of real cats.
 cargo test                      # the detection core, on any OS
 cargo build --release           # on Windows, MSVC toolchain
 cargo xwin build --release --target x86_64-pc-windows-msvc   # from Linux
-makensis -DVERSION=0.3.0 installer/catguard.nsi                # the setup
+makensis -DVERSION=0.3.1 installer/catguard.nsi                # the setup
 python3 assets/make_icons.py    # all icons from one drawing; rsvg-convert, Pillow
 tests/wine-smoke.sh             # the real exe under Wine: lock, swallow, unlock
 ```
@@ -158,7 +158,7 @@ signed file. The realistic routes for this project:
 - Azure Artifact Signing, about 10 USD a month, is open to companies in the
   EU and to individuals in the USA and Canada.
 
-Until then: the exe and the setup carry version information naming WEBSEED
+Until then: the exe and the setup carry version information naming webseed
 OÜ, and the download page should publish their SHA-256. An installer does
 not remove the warning. It is unsigned too, and the same rules apply to it.
 

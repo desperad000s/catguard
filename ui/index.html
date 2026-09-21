@@ -56,7 +56,10 @@ nav button[aria-current="page"] { color: var(--ink); background: var(--raised); 
 nav button[aria-current="page"] svg { color: var(--accent); }
 nav svg { width: 1.35em; height: 1.35em; flex: none; }
 .badge { margin-left: auto; background: var(--lime); color: var(--on-lime); border-radius: 1em; padding: 0 .55em; font-weight: 600; font-size: .85em; }
-.version { margin-top: auto; padding: .8rem; color: var(--muted); font-size: .9em; }
+.credits { margin-top: auto; padding: .8rem; color: var(--muted); font-size: .9em; display: grid; gap: .5rem; }
+.credits #links { display: flex; flex-wrap: wrap; gap: .2rem 1rem; }
+.credits button { padding: 0; border-radius: 0; color: var(--ink); text-decoration: underline; text-underline-offset: .2em; }
+.credits button:hover { background: none; color: var(--accent); }
 
 /* ---- pages */
 main { overflow: auto; padding: var(--gap) clamp(1.2rem, 3vw, 3.5rem) calc(var(--gap) * 1.5); }
@@ -94,6 +97,7 @@ p { max-width: 62ch; }
 .key.on .keycap { fill: var(--lime); stroke: var(--lime); transition: none; }
 .key.on .legend { fill: var(--on-lime); transition: none; }
 .key.blocked .keycap { fill: var(--raised); stroke: var(--muted); transition: none; }
+.key.ghost .keycap { fill: none; stroke-dasharray: 5 4; }
 .deck { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; }
 
 body[data-mode="paused"] .cat-body { fill: var(--muted); }
@@ -102,6 +106,7 @@ body[data-mode="paused"] .lid { opacity: 1; }
 body[data-mode="locked"] .sparks { opacity: 1; }
 body[data-mode="locked"] .deck { stroke: var(--lime); }
 
+.note { margin-top: .6rem; font-size: .9em; max-width: none; }
 .below { display: grid; grid-template-columns: 1.3fr 1fr; gap: var(--gap); margin-top: var(--gap); align-items: start; }
 .try { border-left: 3px solid var(--accent); padding-left: 1.1rem; }
 .try button { margin-top: 1rem; }
@@ -153,7 +158,7 @@ input[type="text"] { background: var(--panel); border: 1.5px solid var(--line); 
 @media (max-width: 860px) {
   body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   nav { flex-direction: row; width: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: .6rem; overflow-x: auto; }
-  .brand, .version { display: none; }
+  .brand, .credits { display: none; }
   .below, .through { grid-template-columns: 1fr; }
   .setting { grid-template-columns: 1fr; }
 }
@@ -176,7 +181,11 @@ input[type="text"] { background: var(--panel); border: 1.5px solid var(--line); 
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 8h14M5 16h14"/><circle cx="9" cy="8" r="2.5" fill="var(--bg)"/><circle cx="15" cy="16" r="2.5" fill="var(--bg)"/></svg>
     Settings
   </button>
-  <div class="version" id="version"></div>
+  <div class="credits">
+    <div id="links"></div>
+    <div>Made by Hendrik Hohnrath, webseed OÜ</div>
+    <div id="version"></div>
+  </div>
 </nav>
 
 <main>
@@ -189,6 +198,7 @@ input[type="text"] { background: var(--panel); border: 1.5px solid var(--line); 
       <button class="primary" id="pause"></button>
     </div>
     <div class="stage" id="stage"></div>
+    <p class="muted note" id="fn-note" hidden>Fn is dashed because the keyboard handles it itself. Windows never sees it, so catguard cannot see or block what Fn does.</p>
     <div class="below">
       <div class="try">
         <h2>Try it</h2>
@@ -247,27 +257,43 @@ const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls)
 const send = (msg) => window.ipc ? window.ipc.postMessage(JSON.stringify(msg)) : demo(msg);
 
 // ------------------------------------------------------------------ keyboard
-// One entry per key: [scancode, width in key units, fallback legend].
-const ROWS = [
-  [[0x29,1,"`"],[2,1,"1"],[3,1,"2"],[4,1,"3"],[5,1,"4"],[6,1,"5"],[7,1,"6"],[8,1,"7"],[9,1,"8"],[10,1,"9"],[11,1,"0"],[12,1,"-"],[13,1,"="],[14,2,"Back"]],
-  [[15,1.5,"Tab"],[16,1,"Q"],[17,1,"W"],[18,1,"E"],[19,1,"R"],[20,1,"T"],[21,1,"Y"],[22,1,"U"],[23,1,"I"],[24,1,"O"],[25,1,"P"],[26,1,"["],[27,1,"]"],[43,1.5,"\\"]],
-  [[58,1.75,"Caps"],[30,1,"A"],[31,1,"S"],[32,1,"D"],[33,1,"F"],[34,1,"G"],[35,1,"H"],[36,1,"J"],[37,1,"K"],[38,1,"L"],[39,1,";"],[40,1,"'"],[28,2.25,"Enter"]],
-  [[42,1.25,"Shift"],[86,1,"<"],[44,1,"Z"],[45,1,"X"],[46,1,"C"],[47,1,"V"],[48,1,"B"],[49,1,"N"],[50,1,"M"],[51,1,","],[52,1,"."],[53,1,"/"],[54,2.75,"Shift"]],
-  [[29,1.5,"Ctrl"],[0xE05B,1.25,"Win"],[56,1.25,"Alt"],[57,6,""],[0xE038,1.25,"Alt"],[0xE05C,1.25,"Win"],[0xE01D,2.5,"Ctrl"]],
-];
-const U = 60, PAD = 18, TOP = 150; // key unit, deck padding, room for the cat
+// One entry per key: [scancode, width in key units, legend]. Code 0 is a key
+// Windows never sees. The shape follows what Windows can tell: ISO or ANSI
+// from the layout language, an Fn key if the machine has a battery.
+function rows(kb) {
+  const iso = kb.iso, fn = kb.laptop;
+  const F = 15 / 13;
+  return [
+    [[1,F,"Esc"], ...[59,60,61,62,63,64,65,66,67,68,87,88].map((code, i) => [code, F, "F" + (i + 1)])],
+    [[0x29,1,"`"],[2,1,"1"],[3,1,"2"],[4,1,"3"],[5,1,"4"],[6,1,"5"],[7,1,"6"],[8,1,"7"],[9,1,"8"],[10,1,"9"],[11,1,"0"],[12,1,"-"],[13,1,"="],[14,2,"Back"]],
+    [[15,1.5,"Tab"],[16,1,"Q"],[17,1,"W"],[18,1,"E"],[19,1,"R"],[20,1,"T"],[21,1,"Y"],[22,1,"U"],[23,1,"I"],[24,1,"O"],[25,1,"P"],[26,1,"["],[27,1,"]"], iso ? [28,1.5,"Enter"] : [43,1.5,"\\"]],
+    [[58,1.75,"Caps"],[30,1,"A"],[31,1,"S"],[32,1,"D"],[33,1,"F"],[34,1,"G"],[35,1,"H"],[36,1,"J"],[37,1,"K"],[38,1,"L"],[39,1,";"],[40,1,"'"], ...(iso ? [[43,1,"#"],[28,1.25,"\u21B5"]] : [[28,2.25,"Enter"]])],
+    [...(iso ? [[42,1.25,"Shift"],[86,1,"<"]] : [[42,2.25,"Shift"]]),[44,1,"Z"],[45,1,"X"],[46,1,"C"],[47,1,"V"],[48,1,"B"],[49,1,"N"],[50,1,"M"],[51,1,","],[52,1,"."],[53,1,"/"],[54,2.75,"Shift"]],
+    [[29,1.25,"Ctrl"], ...(fn ? [[0,1,"Fn"]] : []),[0xE05B,1.25,"Win"],[56,1.25,"Alt"],[57,fn ? 5.5 : 6.5,""],[0xE038,1.25,iso ? "AltGr" : "Alt"],[0xE01D,1.25,"Ctrl"],[0xE04B,.75,"◀"],["updown",.75,""],[0xE04D,.75,"▶"]],
+  ];
+}
+const U = 60, PAD = 18, TOP = 150, FROW = 40; // key unit, deck padding, room for the cat, height of the F row
 const keyNodes = new Map();
+const escapeXml = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 
-function buildStage(names) {
-  const W = 15 * U + 2 * PAD, H = TOP + 5 * U + 2 * PAD;
+function buildStage(names, kb) {
+  const W = 15 * U + 2 * PAD, deckH = FROW + 5 * U + 2 * PAD, H = TOP + deckH;
+  const cap = (code, x, y, w, h, label, size) => {
+    const ghost = code === 0;
+    return `<g class="key${ghost ? " ghost" : ""}" data-code="${code}"><rect class="keycap" x="${x + 3}" y="${y + 3}" width="${w - 6}" height="${h - 6}" rx="${h < 36 ? 6 : 9}"/>` +
+           `<text class="legend" style="font-size:${size}px" x="${x + w / 2}" y="${y + h / 2 + size * .35}">${escapeXml(label)}</text>${ghost ? "<title>The keyboard handles Fn itself. Windows never sees it.</title>" : ""}</g>`;
+  };
   let keys = "";
-  ROWS.forEach((row, r) => {
+  rows(kb).forEach((row, r) => {
     let x = PAD;
+    const y = TOP + PAD + (r === 0 ? 0 : FROW + (r - 1) * U), h = r === 0 ? FROW : U;
     for (const [code, w, fallback] of row) {
-      const label = (names && names[code]) || fallback;
-      const short = label.length > 5 ? label.slice(0, 5) : label;
-      keys += `<g class="key" data-code="${code}"><rect class="keycap" x="${x + 3}" y="${TOP + PAD + r * U + 3}" width="${w * U - 6}" height="${U - 6}" rx="9"/>` +
-              `<text class="legend" x="${x + w * U / 2}" y="${TOP + PAD + r * U + U / 2 + 6}">${short.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</text></g>`;
+      if (code === "updown") {
+        keys += cap(0xE048, x, y, w * U, h / 2, "▲", 11) + cap(0xE050, x, y + h / 2, w * U, h / 2, "▼", 11);
+      } else {
+        const label = (names && names[code]) || fallback;
+        keys += cap(code, x, y, w * U, h, label, r === 0 ? 14 : 17);
+      }
       x += w * U;
     }
   });
@@ -285,11 +311,16 @@ function buildStage(names) {
       </g>
       <g class="sparks"><path d="M128 -120 l22 -30 M146 -84 l34 -14 M150 -44 l32 4"/><path d="M-128 -120 l-22 -30 M-146 -84 l-34 -14 M-150 -44 l-32 4"/></g>
     </g>
-    <rect class="deck" x="1" y="${TOP}" width="${W - 2}" height="${5 * U + 2 * PAD}" rx="20"/>
+    <rect class="deck" x="1" y="${TOP}" width="${W - 2}" height="${deckH}" rx="20"/>
     ${keys}
   </svg>`;
   keyNodes.clear();
-  document.querySelectorAll(".key").forEach((g) => keyNodes.set(+g.dataset.code, g));
+  // The ISO Enter is drawn as two caps with one scancode.
+  document.querySelectorAll(".key").forEach((g) => {
+    const code = +g.dataset.code;
+    if (code) keyNodes.set(code, [...(keyNodes.get(code) || []), g]);
+  });
+  $("#fn-note").hidden = !kb.laptop;
 }
 
 // The cat looks at the key that was pressed last.
@@ -302,11 +333,13 @@ function lookAt(node) {
 
 const cg = window.cg = {
   key(code, down, blocked) {
-    const node = keyNodes.get(code);
-    if (!node) return;
-    node.classList.toggle("on", down && !blocked);
-    node.classList.toggle("blocked", down && blocked);
-    if (down) lookAt(node);
+    const nodes = keyNodes.get(code);
+    if (!nodes) return;
+    for (const node of nodes) {
+      node.classList.toggle("on", down && !blocked);
+      node.classList.toggle("blocked", down && blocked);
+    }
+    if (down) lookAt(nodes[0]);
   },
   state(s) { render(s); },
   show(page) { show(page); },
@@ -315,9 +348,9 @@ const cg = window.cg = {
 // --------------------------------------------------------------------- pages
 function show(page) {
   document.querySelectorAll("main > section").forEach((sec) => sec.hidden = sec.id !== page);
-  document.querySelectorAll("nav button").forEach((b) => b.dataset.page === page ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current"));
+  document.querySelectorAll("nav button[data-page]").forEach((b) => b.dataset.page === page ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current"));
 }
-document.querySelectorAll("nav button").forEach((b) => b.onclick = () => show(b.dataset.page));
+document.querySelectorAll("nav button[data-page]").forEach((b) => b.onclick = () => show(b.dataset.page));
 
 const SENSITIVITY = {
   relaxed: "Only a whole paw counts: three keys at once, or four in one spot. Pick this if you play games on this keyboard.",
@@ -337,7 +370,7 @@ function render(s) {
   state = s;
   const theme = s.settings.theme === "system" ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark") : s.settings.theme;
   document.documentElement.dataset.theme = theme;
-  if (s.key_names && !names) { names = s.key_names; buildStage(names); }
+  if (s.key_names && !names) { names = s.key_names; buildStage(names, s.keyboard); }
 
   const mode = s.locked ? "locked" : s.paused ? "paused" : "watching";
   document.body.dataset.mode = mode;
@@ -351,6 +384,8 @@ function render(s) {
   $("#pause").className = s.paused ? "primary" : "quiet";
   $("#word-hint").textContent = s.settings.word;
   $("#version").textContent = "catguard " + s.version;
+  const LINK_TEXT = { github: "GitHub", site: "webseed.me", linkedin: "LinkedIn" };
+  $("#links").replaceChildren(...s.links.map((name) => { const b = el("button", "", LINK_TEXT[name]); b.onclick = () => send({ cmd: "open", value: name }); return b; }));
 
   const last = $("#last"); last.replaceChildren();
   if (s.incident) {
@@ -465,13 +500,15 @@ function demo(msg) {
   render(state);
 }
 document.addEventListener("contextmenu", (e) => e.preventDefault());
-buildStage(null);
+buildStage(null, { iso: true, laptop: true });
 if (window.ipc) send({ cmd: "ready" });
 else {
   const q = new URLSearchParams(location.search), t0 = 1_000_000;
   const press = (name, down, up, kind, repeats = 0) => ({ name, down: t0 + down * 1000, up: up == null ? null : t0 + up * 1000, kind, repeats });
   render({
-    version: "0.3.0", paused: q.get("mode") === "paused", locked: q.get("mode") === "locked", key_names: null,
+    version: "0.3.1", paused: q.get("mode") === "paused", locked: q.get("mode") === "locked",
+    keyboard: { iso: q.get("kb") !== "ansi", laptop: !q.has("desktop") }, links: ["github", "site", "linkedin"],
+    key_names: q.get("kb") === "ansi" ? {} : { 41: "^", 12: "ß", 13: "´", 21: "Z", 44: "Y", 26: "Ü", 27: "+", 39: "Ö", 40: "Ä", 43: "#", 86: "<", 53: "-" },
     stats: { locks: 12 },
     settings: { sensitivity: "normal", sound: true, sound_kind: "hiss", word: "human", autostart: true, theme: q.get("theme") || "dark" },
     incident: q.has("empty") ? null : {
